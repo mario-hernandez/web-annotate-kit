@@ -1,0 +1,85 @@
+{
+  "name": "web-annotate-kit",
+  "version": "0.1.0",
+  "description": "Pin-anchored visual review and comments for any live website. React client + Express server + pluggable storage (SQLite, Turso).",
+  "type": "module",
+  "author": {
+    "name": "Mario Hernández",
+    "url": "https://github.com/mario-hernandez"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mario-hernandez/web-annotate-kit.git"
+  },
+  "homepage": "https://github.com/mario-hernandez/web-annotate-kit#readme",
+  "bugs": {
+    "url": "https://github.com/mario-hernandez/web-annotate-kit/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./src/client/index.ts"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    },
+    "./schema.sql": "./src/schema.sql"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "review",
+    "comments",
+    "annotation",
+    "feedback",
+    "screenshot",
+    "visual-review",
+    "react",
+    "express",
+    "pin",
+    "website-review",
+    "proofing",
+    "turso",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "react-router-dom": ">=6"
+  },
+  "peerDependenciesMeta": {
+    "react-router-dom": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "driver.js": "^1.4.0"
+  },
+  "optionalDependencies": {
+    "@libsql/client": "^0.17.0",
+    "better-sqlite3": "^12.0.0",
+    "express": ">=4",
+    "framer-motion": ">=11"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+.DS_Store
+screenshots/
+example/**/screenshots/
+example/**/*.db
+example/**/*.db-journal
+example/**/*.db-wal
+example/**/*.db-shm
