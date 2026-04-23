@@ -2,15 +2,38 @@
 
 # web-annotate-kit
 
-> Pin-anchored visual review on any live website. React + Express + pluggable storage.
-
-Stop asking your team to **"send me a screenshot with a red circle by email"**. Let reviewers drop comments directly on the running site, at the exact pixel they care about, with an automatic screenshot attached.
-
-Built for teams reviewing content, design and copy on staging/production websites — directors, content writers, designers — without making them learn Figma.
+> **A proofing tool for live websites.** Your team clicks anywhere on the site, drops a comment at that exact pixel, and it's saved with an automatic screenshot plus full DOM context.
 
 ![MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![React 18+](https://img.shields.io/badge/react-%E2%89%A518-61DAFB?logo=react)
 ![Node 20+](https://img.shields.io/badge/node-%E2%89%A520-5FA04E?logo=node.js)
+
+## What problem it solves
+
+Most websites are reviewed by people who aren't developers — directors, content writers, brand managers, agency clients. Today they send feedback via email, WhatsApp or PDFs with red arrows. The developer then copies that into tickets, tries to figure out which paragraph they meant, iterates, and sends a new screenshot back for approval. Friction at every step, context lost every time.
+
+**web-annotate-kit replaces that loop with a single place.** Anyone on the team with a password opens your site — staging or production — clicks the **+** button at the bottom-right, and drops a colored pin anywhere: literally on the headline that should change, on the image that's too big, on the button with the wrong copy. They write a short note. It's saved instantly. Everyone else sees it when they log in.
+
+## What each pin actually captures
+
+Every comment is anchored to **percent-x + page-y** (so it survives responsive reflows and layout shifts), and the server stores:
+
+- An **automatic PNG screenshot** of what the reviewer was seeing at the moment of the click, with a red marker drawn at the pin location.
+- The **DOM context**: nearest `<section>` heading, the enclosing tag name, up to 120 characters of surrounding text, and a short CSS selector path.
+- **Author, color, timestamp, status** (open / resolved), and optional edit history.
+
+A companion **dashboard** aggregates every pin across every URL of your site, filterable by reviewer, page or status. One click exports to `.txt` (ready to paste into an LLM — "turn these into a punchlist") or `.json` for tooling.
+
+## Typical use cases
+
+- A **design agency** collecting client feedback on a staging site before launch
+- A **content team** proofing article copy after publishing
+- A **director or copywriter** reviewing a new landing page and pointing at exact words to rewrite
+- A **brand manager** spotting rendering issues and inconsistencies across desktop and mobile
+- **Stakeholders** giving structured feedback on a live prototype without needing Figma
+- **QA** pairing visual bugs with exact DOM selectors for the engineer to fix
+
+It fits any React app with an Express backend. Pluggable storage means you can run it with a single-file SQLite for a weekend project or with Turso (hosted libsql) for a distributed team.
 
 ---
 
