@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useReview } from './ReviewProvider';
 
 export interface ReviewDashboardProps {
@@ -18,12 +18,26 @@ export default function ReviewDashboard({
   accentColor = '#305B91',
   title = 'Review',
 }: ReviewDashboardProps = {}) {
-  const { user, comments, deleteComment, resolveComment, exportComments, exportCompact } = useReview();
+  const { user, comments, deleteComment, resolveComment, exportComments, exportCompact, config } = useReview();
+  const { resolvedOpacity, storageKeyPrefix } = config;
+  const SHOW_RESOLVED_KEY = `${storageKeyPrefix}-show-resolved`;
   const [filterAuthor, setFilterAuthor] = useState('all');
   const [filterPage, setFilterPage] = useState('all');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'resolved'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'open' | 'resolved'>(() => {
+    if (typeof window === 'undefined') return 'open';
+    const stored = localStorage.getItem(SHOW_RESOLVED_KEY);
+    if (stored === 'true') return 'all';
+    if (stored === 'false') return 'open';
+    return 'open';
+  });
   const [filterScope, setFilterScope] = useState<'mine' | 'team' | 'all'>('all');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (filterStatus === 'open') localStorage.setItem(SHOW_RESOLVED_KEY, 'false');
+    else if (filterStatus === 'all' || filterStatus === 'resolved') localStorage.setItem(SHOW_RESOLVED_KEY, 'true');
+  }, [filterStatus, SHOW_RESOLVED_KEY]);
 
   if (!user) return null;
 
@@ -86,8 +100,11 @@ export default function ReviewDashboard({
             <div>
               <h1 className="wak-dash-h1">{title} — {user.name}</h1>
               <p className="wak-dash-sub">
-                {visible.length} comments · {pages.length} pages
-                {authors.length > 1 && ` · ${authors.length} reviewers`}
+                <span className="wak-dash-kpi-open">Open: {openCount}</span>
+                <span className="wak-dash-kpi-secondary">
+                  {' · '}{visible.length} total · {resolvedCount} resolved · {pages.length} pages
+                  {authors.length > 1 && ` · ${authors.length} reviewers`}
+                </span>
               </p>
             </div>
           </div>
@@ -194,12 +211,12 @@ export default function ReviewDashboard({
         </div>
       </div>
 
-      <DashboardStyles accentColor={accentColor} />
+      <DashboardStyles accentColor={accentColor} resolvedOpacity={resolvedOpacity} />
     </div>
   );
 }
 
-function DashboardStyles({ accentColor }: { accentColor: string }) {
+function DashboardStyles({ accentColor, resolvedOpacity }: { accentColor: string; resolvedOpacity: number }) {
   return (
     <style>{`
       .wak-dash-root { min-height: 100vh; background: #f9fafb; font-family: system-ui, -apple-system, sans-serif; }
@@ -211,6 +228,8 @@ function DashboardStyles({ accentColor }: { accentColor: string }) {
       .wak-dash-back:hover { background: #f3f4f6; color: #6b7280; }
       .wak-dash-h1 { font-size: 18px; font-weight: 600; color: #111827; margin: 0; }
       .wak-dash-sub { font-size: 12px; color: #6b7280; margin: 2px 0 0; }
+      .wak-dash-kpi-open { font-size: 14px; font-weight: 600; color: #111827; }
+      .wak-dash-kpi-secondary { font-size: 11px; color: #9ca3af; }
       .wak-dash-header .wak-dash-wrap { display: flex; align-items: center; justify-content: space-between; }
       .wak-dash-actions { display: flex; align-items: center; gap: 8px; }
       .wak-dash-btn-outline, .wak-dash-btn-primary { border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
@@ -232,9 +251,12 @@ function DashboardStyles({ accentColor }: { accentColor: string }) {
       .wak-select { border-radius: 8px; border: 1px solid #e5e7eb; background: white; padding: 8px 12px; font-size: 13px; color: #374151; outline: none; }
       .wak-select:focus { border-color: ${accentColor}; }
       .wak-dash-list { display: flex; flex-direction: column; gap: 12px; }
-      .wak-dash-item { border-radius: 12px; border: 1px solid #f3f4f6; background: white; padding: 20px; transition: all 0.15s; }
+      .wak-dash-item { border-radius: 12px; border: 1px solid #f3f4f6; background: white; padding: 20px; transition: opacity 300ms ease-out, filter 300ms ease-out, border-color 300ms ease-out; }
       .wak-dash-item.wak-others { padding: 12px 20px; background: rgba(249,250,251,0.7); }
-      .wak-dash-item.wak-resolved { border-color: #d1fae5; opacity: 0.6; }
+      .wak-dash-item.wak-resolved { border-color: #e5e7eb; opacity: ${resolvedOpacity}; }
+      .wak-dash-item.wak-resolved .wak-author-name,
+      .wak-dash-item.wak-resolved .wak-dash-text { text-decoration: line-through; text-decoration-color: rgba(0,0,0,0.25); text-decoration-thickness: 1px; }
+      .wak-dash-item.wak-resolved .wak-thumb { filter: grayscale(0.6) saturate(0.5); transition: filter 300ms ease-out; }
       .wak-dash-item-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
       .wak-dash-item-author { display: flex; align-items: center; gap: 12px; }
       .wak-avatar { display: flex; height: 32px; width: 32px; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 9999px; font-weight: 700; color: white; font-size: 12px; }

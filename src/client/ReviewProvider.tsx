@@ -15,6 +15,8 @@ interface ReviewContextType {
     captureScreenshots: boolean;
     sessionCookieName: string;
     storageKeyPrefix: string;
+    resolvedOpacity: number;
+    resolvedPinOpacity: number;
   };
   login: (password: string, remember?: boolean) => boolean;
   logout: () => void;
@@ -57,6 +59,10 @@ export interface ReviewProviderProps {
   sessionCookieName?: string;
   /** Session cookie duration in days. Default: 30. */
   sessionCookieDays?: number;
+  /** Opacity for resolved comment cards / items in lists. Default: 0.45. */
+  resolvedOpacity?: number;
+  /** Opacity for resolved pins on the page (non-active). Default: 0.28. */
+  resolvedPinOpacity?: number;
   children: ReactNode;
 }
 
@@ -172,6 +178,8 @@ export function ReviewProvider({
   storageKeyPrefix = 'wak',
   sessionCookieName = 'wak_session',
   sessionCookieDays = 30,
+  resolvedOpacity = 0.45,
+  resolvedPinOpacity = 0.28,
   children,
 }: ReviewProviderProps) {
   const SK_USER = `${storageKeyPrefix}-user`;
@@ -341,7 +349,7 @@ export function ReviewProvider({
       value={{
         user,
         comments,
-        config: { apiBase, apiKey, captureScreenshots, sessionCookieName, storageKeyPrefix },
+        config: { apiBase, apiKey, captureScreenshots, sessionCookieName, storageKeyPrefix, resolvedOpacity, resolvedPinOpacity },
         login, logout,
         addComment, updateComment, deleteComment, resolveComment,
         exportComments, exportCompact,

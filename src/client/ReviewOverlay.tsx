@@ -75,35 +75,41 @@ function captureDomContext(clientX: number, clientY: number) {
 /* ─── Pin ────────────────────────────────────────────────────── */
 
 function Pin({
-  comment, index, isActive, isEditing, editText, canEdit,
+  comment, index, isActive, isEditing, editText, canEdit, resolvedPinOpacity,
   onEditTextChange, onSaveEdit, onClick, onEdit, onDelete, onCancelEdit, onResolve,
 }: {
   comment: ReviewComment; index: number; isActive: boolean; isEditing: boolean;
   editText: string; onEditTextChange: (t: string) => void; onSaveEdit: () => void;
   onClick: () => void; onEdit: () => void; onDelete: () => void; onCancelEdit: () => void;
-  onResolve: () => void; canEdit: boolean;
+  onResolve: () => void; canEdit: boolean; resolvedPinOpacity: number;
 }) {
   const showLeft = comment.x > 65;
   const popPos = showLeft ? { right: '2rem', left: 'auto' } : { left: '2rem', right: 'auto' };
   const color = comment.authorColor || '#6B7280';
   const isMine = canEdit;
+  const dimmed = comment.resolved && !isActive;
+  const wrapStyle: Record<string, string | number> = {
+    position: 'absolute',
+    left: `${comment.x}%`,
+    top: `${comment.y}px`,
+    transform: 'translate(-50%, -50%)',
+    pointerEvents: 'auto',
+    zIndex: isActive ? 9992 : 9991,
+  };
+  if (dimmed) {
+    wrapStyle['--wak-pin-dim-opacity'] = String(resolvedPinOpacity);
+  } else {
+    wrapStyle.opacity = isMine ? 1 : 0.6;
+  }
 
   return (
     <div
-      style={{
-        position: 'absolute',
-        left: `${comment.x}%`,
-        top: `${comment.y}px`,
-        transform: 'translate(-50%, -50%)',
-        pointerEvents: 'auto',
-        zIndex: isActive ? 9992 : 9991,
-        opacity: comment.resolved && !isActive ? 0.35 : isMine ? 1 : 0.6,
-        transition: 'opacity 0.2s',
-      }}
+      className={`wak-pin-wrap ${dimmed ? 'wak-pin-dimmed' : ''}`}
+      style={wrapStyle}
     >
       <button
         onClick={onClick}
-        className={`wak-pin-btn ${isMine ? 'wak-pin-mine' : 'wak-pin-others'}`}
+        className={`wak-pin-btn ${isMine ? 'wak-pin-mine' : 'wak-pin-others'} ${dimmed ? 'wak-pin-btn-dimmed' : ''}`}
         style={{
           backgroundColor: isMine ? color : 'transparent',
           border: isMine ? 'none' : `2px dashed ${color}`,
@@ -207,8 +213,9 @@ export default function ReviewOverlay({
 }: ReviewOverlayProps = {}) {
   const {
     user, comments, addComment, updateComment, deleteComment, resolveComment,
-    exportComments, exportCompact, logout,
+    exportComments, exportCompact, logout, config,
   } = useReview();
+  const { resolvedOpacity, resolvedPinOpacity } = config;
 
   const defaultPath = useDefaultPath();
   const pathname = currentPath ?? defaultPath;
@@ -322,6 +329,7 @@ export default function ReviewOverlay({
               onCancelEdit={() => { setEditId(null); setEditText(''); }}
               onResolve={() => resolveComment(c.id)}
               canEdit={c.author === user.name || user.role === 'admin'}
+              resolvedPinOpacity={resolvedPinOpacity}
             />
           ))}
 
@@ -479,7 +487,7 @@ export default function ReviewOverlay({
         )}
       </div>
 
-      <OverlayStyles accentColor={accentColor} />
+      <OverlayStyles accentColor={accentColor} resolvedOpacity={resolvedOpacity} />
     </div>,
     document.body,
   );
@@ -487,14 +495,19 @@ export default function ReviewOverlay({
 
 /* ─── Scoped styles ─────────────────────────────────────────── */
 
-function OverlayStyles({ accentColor }: { accentColor: string }) {
+function OverlayStyles({ accentColor, resolvedOpacity }: { accentColor: string; resolvedOpacity: number }) {
   return (
     <style>{`
       .wak-root * { box-sizing: border-box; }
       .wak-add-overlay { position: fixed; inset: 0; z-index: 9993; cursor: crosshair; }
       .wak-add-banner { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px; color: white; font-size: 14px; font-weight: 500; pointer-events: none; }
       .wak-pins-layer { position: absolute; top: 0; left: 0; width: 100%; height: 0; overflow: visible; pointer-events: none; z-index: 9990; }
-      .wak-pin-btn { display: flex; align-items: center; justify-content: center; border-radius: 9999px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); transition: all 0.15s; cursor: pointer; border: none; }
+      .wak-pin-wrap { transition: opacity 300ms ease-out, filter 300ms ease-out; }
+      .wak-pin-dimmed { opacity: var(--wak-pin-dim-opacity, 0.28); filter: saturate(0.4); }
+      .wak-pin-dimmed:hover { opacity: 1; filter: saturate(1); }
+      .wak-pin-btn { display: flex; align-items: center; justify-content: center; border-radius: 9999px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); transition: box-shadow 300ms ease-out, transform 0.15s; cursor: pointer; border: none; }
+      .wak-pin-btn-dimmed { box-shadow: 0 0 0 1px rgba(0,0,0,0.08); }
+      .wak-pin-dimmed:hover .wak-pin-btn-dimmed { box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
       .wak-pin-mine { height: 28px; width: 28px; }
       .wak-pin-others { height: 20px; width: 20px; }
       .wak-pin-btn:hover { transform: scale(1.1); }
@@ -552,7 +565,11 @@ function OverlayStyles({ accentColor }: { accentColor: string }) {
       .wak-panel-item:hover { background: #f9fafb; }
       .wak-panel-item.wak-others { background: rgba(249,250,251,0.5); padding-top: 8px; padding-bottom: 8px; }
       .wak-panel-item.wak-active { background: ${accentColor}10; }
-      .wak-panel-item.wak-resolved { opacity: 0.4; }
+      .wak-panel-item { transition: opacity 300ms ease-out, filter 300ms ease-out; }
+      .wak-panel-item.wak-resolved { opacity: ${resolvedOpacity}; }
+      .wak-panel-item.wak-resolved .wak-author-name,
+      .wak-panel-item.wak-resolved .wak-comment-preview { text-decoration: line-through; text-decoration-color: rgba(0,0,0,0.25); text-decoration-thickness: 1px; }
+      .wak-panel-item.wak-resolved .wak-panel-thumb { filter: grayscale(0.6) saturate(0.5); }
       .wak-panel-avatar { display: flex; height: 24px; width: 24px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9999px; font-size: 10px; font-weight: 700; color: white; margin-top: 2px; }
       .wak-panel-body { flex: 1; min-width: 0; }
       .wak-panel-row { display: flex; align-items: center; gap: 6px; }

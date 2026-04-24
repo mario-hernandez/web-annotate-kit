@@ -59,72 +59,63 @@ export default function ReviewLogin({
   const isDev = typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#0a1628]">
-      <div
-        className="absolute inset-0 opacity-[0.03]"
-        style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '40px 40px' }}
-      />
-      <div className={`relative w-full max-w-xs px-6 transition-transform ${shake ? 'wak-shake' : ''}`}>
-        <div className="text-center">
-          <div
-            className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-full"
-            style={{ backgroundColor: `${accentColor}33` }}
-          >
-            <svg className="h-6 w-6" style={{ color: accentColor }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+    <div className="wak-login-root">
+      <div className="wak-login-grid" aria-hidden="true" />
+      <div className={`wak-login-card ${shake ? 'wak-login-shake' : ''}`}>
+        <div className="wak-login-header">
+          <div className="wak-login-lock" style={{ backgroundColor: `${accentColor}33` }}>
+            <svg className="wak-login-lock-icon" style={{ color: accentColor }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
             </svg>
           </div>
-          <h1 className="text-3xl font-light text-white" style={{ fontFamily: "'Cormorant Garamond', Georgia, serif" }}>
-            {brand}
-          </h1>
-          <p className="mt-2 text-sm text-white/30">{subtitle}</p>
+          <h1 className="wak-login-brand">{brand}</h1>
+          <p className="wak-login-subtitle">{subtitle}</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-10">
+        <form onSubmit={handleSubmit} className="wak-login-form">
           <input
             type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={lockSeconds > 0}
-            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 text-center text-sm text-white placeholder-white/25 outline-none transition focus:bg-white/[0.07] disabled:opacity-40"
-            style={{ borderColor: lockSeconds > 0 ? undefined : undefined }}
+            className="wak-login-input"
             autoFocus
             autoComplete="current-password"
           />
 
-          <label className="mt-4 flex cursor-pointer items-center justify-center gap-2">
+          <label className="wak-login-remember">
             <input
               type="checkbox"
               checked={remember}
               onChange={(e) => setRemember(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-white/20 bg-white/5"
+              className="wak-login-check"
               style={{ accentColor }}
             />
-            <span className="text-xs text-white/30">Remember me</span>
+            <span>Remember me</span>
           </label>
 
           <button
             type="submit"
             disabled={lockSeconds > 0}
-            className="mt-4 w-full rounded-xl py-3.5 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-40"
+            className="wak-login-submit"
             style={{ backgroundColor: accentColor }}
           >
             {lockSeconds > 0 ? `Wait ${lockSeconds}s` : 'Enter'}
           </button>
-          {error && <p className="mt-3 text-center text-sm text-red-400/80">{error}</p>}
+          {error && <p className="wak-login-error">{error}</p>}
         </form>
 
         {isDev && devPasswords && devPasswords.length > 0 && (
-          <div className="mt-8 rounded-lg border border-white/5 bg-white/[0.03] px-4 py-3">
-            <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-white/20">Dev passwords</p>
-            <div className="flex flex-wrap gap-2">
+          <div className="wak-login-dev">
+            <p className="wak-login-dev-title">Dev passwords</p>
+            <div className="wak-login-dev-list">
               {devPasswords.map((u) => (
                 <button
                   key={u.name}
                   type="button"
                   onClick={() => setPassword(u.password)}
-                  className="rounded-md bg-white/5 px-2 py-1 text-[11px] text-white/40 transition hover:bg-white/10 hover:text-white/70"
+                  className="wak-login-dev-btn"
                 >
                   {u.name}
                 </button>
@@ -134,16 +125,50 @@ export default function ReviewLogin({
         )}
       </div>
 
-      <style>{`
-        .wak-shake { animation: wak-shake 0.5s ease-in-out; }
-        @keyframes wak-shake {
-          0%, 100% { transform: translateX(0); }
-          20% { transform: translateX(-8px); }
-          40% { transform: translateX(8px); }
-          60% { transform: translateX(-4px); }
-          80% { transform: translateX(4px); }
-        }
-      `}</style>
+      <LoginStyles accentColor={accentColor} />
     </div>
+  );
+}
+
+function LoginStyles({ accentColor }: { accentColor: string }) {
+  return (
+    <style>{`
+      .wak-login-root { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: #0a1628; font-family: system-ui, -apple-system, sans-serif; }
+      .wak-login-root * { box-sizing: border-box; }
+      .wak-login-grid { position: absolute; inset: 0; opacity: 0.03; background-image: radial-gradient(circle at 1px 1px, white 1px, transparent 0); background-size: 40px 40px; pointer-events: none; }
+      .wak-login-card { position: relative; width: 100%; max-width: 320px; padding: 0 24px; transition: transform 0.15s; }
+      .wak-login-shake { animation: wak-login-shake 0.5s ease-in-out; }
+      .wak-login-header { text-align: center; }
+      .wak-login-lock { margin: 0 auto 24px; display: flex; height: 48px; width: 48px; align-items: center; justify-content: center; border-radius: 9999px; }
+      .wak-login-lock-icon { height: 24px; width: 24px; }
+      .wak-login-brand { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 32px; font-weight: 300; color: white; margin: 0; line-height: 1.1; }
+      .wak-login-subtitle { margin: 8px 0 0; font-size: 13px; color: rgba(255,255,255,0.3); }
+      .wak-login-form { margin-top: 40px; display: flex; flex-direction: column; }
+      .wak-login-input { width: 100%; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); padding: 14px 16px; text-align: center; font-size: 13px; color: white; outline: none; transition: background 0.15s; font-family: inherit; }
+      .wak-login-input::placeholder { color: rgba(255,255,255,0.25); }
+      .wak-login-input:focus { background: rgba(255,255,255,0.07); }
+      .wak-login-input:disabled { opacity: 0.4; }
+      .wak-login-remember { margin-top: 16px; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-size: 12px; color: rgba(255,255,255,0.3); }
+      .wak-login-check { height: 14px; width: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); }
+      .wak-login-submit { margin-top: 16px; width: 100%; border-radius: 12px; border: none; padding: 14px; font-size: 13px; font-weight: 500; color: white; cursor: pointer; transition: transform 0.1s; font-family: inherit; }
+      .wak-login-submit:active { transform: scale(0.98); }
+      .wak-login-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+      .wak-login-error { margin-top: 12px; text-align: center; font-size: 13px; color: rgba(248,113,113,0.8); }
+      .wak-login-dev { margin-top: 32px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); background: rgba(255,255,255,0.03); padding: 12px 16px; }
+      .wak-login-dev-title { margin: 0 0 8px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(255,255,255,0.2); }
+      .wak-login-dev-list { display: flex; flex-wrap: wrap; gap: 8px; }
+      .wak-login-dev-btn { border-radius: 6px; border: none; background: rgba(255,255,255,0.05); padding: 4px 8px; font-size: 11px; color: rgba(255,255,255,0.4); cursor: pointer; transition: background 0.15s, color 0.15s; font-family: inherit; }
+      .wak-login-dev-btn:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
+
+      @keyframes wak-login-shake {
+        0%, 100% { transform: translateX(0); }
+        20% { transform: translateX(-8px); }
+        40% { transform: translateX(8px); }
+        60% { transform: translateX(-4px); }
+        80% { transform: translateX(4px); }
+      }
+
+      .wak-login-input:focus { border-color: ${accentColor}; }
+    `}</style>
   );
 }

@@ -239,6 +239,8 @@ For anything beyond internal review, fork and replace the auth layer.
 | `screenshotTimeoutMs` | `8000` | Abort the screenshot capture after this many ms. |
 | `storageKeyPrefix` | `"wak"` | Prefix for all `localStorage` keys. |
 | `sessionCookieName` | `"wak_session"` | Cookie name for the 30-day session. |
+| `resolvedOpacity` | `0.45` | Opacity for resolved comment cards in lists (dashboard + side panel). |
+| `resolvedPinOpacity` | `0.28` | Opacity for resolved pins on the page (non-active). Hover reveals to 1. |
 
 ### `<ReviewOverlay>` props
 
