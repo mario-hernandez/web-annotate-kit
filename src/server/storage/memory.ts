@@ -40,6 +40,7 @@ export function memoryStorage(): {
         resolved: status === 'resolved',
         acceptedAt: opts?.acceptedAt ?? r.acceptedAt,
         acceptedBy: opts?.acceptedBy ?? r.acceptedBy,
+        acceptedById: opts?.acceptedById ?? r.acceptedById,
       });
     },
     async toggleResolved(id) {

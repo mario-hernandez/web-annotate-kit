@@ -26,6 +26,7 @@ function rowToReview(row: Record<string, unknown>): ReviewRecord {
   const status = ((row.status as string) ?? 'open') as ReviewStatus;
   return {
     id: row.id as string,
+    authorId: (row.author_id as string) ?? null,
     author: row.author as string,
     authorColor: (row.author_color as string) ?? null,
     page: row.page as string,
@@ -40,6 +41,7 @@ function rowToReview(row: Record<string, unknown>): ReviewRecord {
     notes,
     acceptedAt: (row.accepted_at as string) ?? null,
     acceptedBy: (row.accepted_by as string) ?? null,
+    acceptedById: (row.accepted_by_id as string) ?? null,
     section: (row.section as string) ?? null,
     nearestText: (row.nearest_text as string) ?? null,
     selector: (row.selector as string) ?? null,
@@ -91,13 +93,13 @@ export async function tursoStorage(options: TursoOptions): Promise<{
 
   if (options.bootstrap !== false) {
     await db.execute(`CREATE TABLE IF NOT EXISTS reviews (
-      id TEXT PRIMARY KEY, author TEXT NOT NULL, author_color TEXT,
+      id TEXT PRIMARY KEY, author_id TEXT, author TEXT NOT NULL, author_color TEXT,
       page TEXT NOT NULL, x REAL NOT NULL, y INTEGER NOT NULL, text TEXT NOT NULL,
       created_at TEXT NOT NULL, updated_at TEXT, resolved INTEGER DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'open',
       department TEXT NOT NULL DEFAULT 'general',
       notes TEXT NOT NULL DEFAULT '[]',
-      accepted_at TEXT, accepted_by TEXT,
+      accepted_at TEXT, accepted_by TEXT, accepted_by_id TEXT,
       section TEXT, nearest_text TEXT, selector TEXT, tag_name TEXT, screenshot_url TEXT
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS wak_departments (
@@ -114,6 +116,8 @@ export async function tursoStorage(options: TursoOptions): Promise<{
     await ensureColumn(db, 'reviews', 'notes', "TEXT NOT NULL DEFAULT '[]'");
     await ensureColumn(db, 'reviews', 'accepted_at', 'TEXT');
     await ensureColumn(db, 'reviews', 'accepted_by', 'TEXT');
+    await ensureColumn(db, 'reviews', 'author_id', 'TEXT');
+    await ensureColumn(db, 'reviews', 'accepted_by_id', 'TEXT');
     await db.execute(`UPDATE reviews SET status = 'resolved' WHERE resolved = 1 AND (status IS NULL OR status = 'open')`);
   }
 
@@ -124,14 +128,14 @@ export async function tursoStorage(options: TursoOptions): Promise<{
     },
     async insert(r) {
       await db.execute({
-        sql: `INSERT INTO reviews (id, author, author_color, page, x, y, text, created_at, updated_at,
-                                    resolved, status, department, notes, accepted_at, accepted_by,
+        sql: `INSERT INTO reviews (id, author_id, author, author_color, page, x, y, text, created_at, updated_at,
+                                    resolved, status, department, notes, accepted_at, accepted_by, accepted_by_id,
                                     section, nearest_text, selector, tag_name, screenshot_url)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
-          r.id, r.author, r.authorColor, r.page, r.x, r.y, r.text, r.createdAt, r.updatedAt,
+          r.id, r.authorId, r.author, r.authorColor, r.page, r.x, r.y, r.text, r.createdAt, r.updatedAt,
           r.status === 'resolved' ? 1 : 0, r.status, r.department, JSON.stringify(r.notes ?? []),
-          r.acceptedAt, r.acceptedBy,
+          r.acceptedAt, r.acceptedBy, r.acceptedById,
           r.section, r.nearestText, r.selector, r.tagName, r.screenshotUrl,
         ],
       });
@@ -146,9 +150,11 @@ export async function tursoStorage(options: TursoOptions): Promise<{
       await db.execute({
         sql: `UPDATE reviews SET status = ?, resolved = ?,
                 accepted_at = COALESCE(?, accepted_at),
-                accepted_by = COALESCE(?, accepted_by)
+                accepted_by = COALESCE(?, accepted_by),
+                accepted_by_id = COALESCE(?, accepted_by_id)
               WHERE id = ?`,
-        args: [status, status === 'resolved' ? 1 : 0, opts?.acceptedAt ?? null, opts?.acceptedBy ?? null, id],
+        args: [status, status === 'resolved' ? 1 : 0,
+               opts?.acceptedAt ?? null, opts?.acceptedBy ?? null, opts?.acceptedById ?? null, id],
       });
     },
     async toggleResolved(id) {

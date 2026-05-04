@@ -29,6 +29,7 @@ export interface ReviewUserDef extends ReviewUser {
 
 export interface ReviewNote {
   id: string;
+  authorId?: string | null;
   author: string;
   authorColor: string;
   text: string;
@@ -37,6 +38,8 @@ export interface ReviewNote {
 
 export interface ReviewComment {
   id: string;
+  /** Stable id of the author user. Optional for legacy rows. */
+  authorId?: string | null;
   author: string;
   authorColor: string;
   page: string;
@@ -55,8 +58,10 @@ export interface ReviewComment {
   notes?: ReviewNote[];
   /** Timestamp when a lead accepted it (= moment of escalation to the director). */
   acceptedAt?: string | null;
-  /** User name of the lead that accepted it. */
+  /** Display name of the lead that accepted it. */
   acceptedBy?: string | null;
+  /** Stable id of the lead that accepted it. */
+  acceptedById?: string | null;
   section?: string | null;
   nearestText?: string | null;
   selector?: string | null;

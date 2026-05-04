@@ -9,11 +9,13 @@ export type ClientReviewAction = 'edit' | 'delete' | 'accept' | 'resolve' | 'add
 export function canActOnComment(
   user: ReviewUser | null,
   action: ClientReviewAction,
-  comment: Pick<ReviewComment, 'author' | 'department' | 'status'>,
+  comment: Pick<ReviewComment, 'authorId' | 'author' | 'department' | 'status'>,
 ): boolean {
   if (!user) return false;
 
-  const isMine = comment.author === user.name;
+  const isMine = comment.authorId
+    ? comment.authorId === user.id
+    : comment.author === user.name;
   const isLeadOfThisDept =
     user.role === 'lead' && (comment.department === user.departmentId || comment.department === 'general');
 
@@ -28,7 +30,10 @@ export function canActOnComment(
       if (comment.status !== 'open') return false;
       return isLeadOfThisDept || user.role === 'director' || user.role === 'admin';
     case 'resolve':
+      if (comment.status !== 'accepted') return false;
+      return user.role === 'director' || user.role === 'admin';
     case 'reopen':
+      if (comment.status !== 'resolved') return false;
       return user.role === 'director' || user.role === 'admin';
   }
 }

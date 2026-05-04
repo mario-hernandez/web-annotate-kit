@@ -53,8 +53,13 @@ export interface CreateReviewRouterOptions {
   };
   /** Shared secret required on the login endpoint via `X-API-Key` header. Also used for bootstrap. */
   apiKey: string;
-  /** Secret used to sign session tokens. Defaults to apiKey. Use a separate strong value in production. */
-  sessionSecret?: string;
+  /**
+   * Secret used to sign session cookies (HMAC-SHA256). REQUIRED.
+   * Must NOT equal `apiKey` — `apiKey` ships in the client bundle and is therefore
+   * publicly readable; reusing it would let any visitor mint forged session cookies.
+   * Use a long random string from your secret manager / env.
+   */
+  sessionSecret: string;
   /** Session TTL in days. Default: 7. */
   sessionTtlDays?: number;
   /** Cookie name. Default: 'wak_session'. */
@@ -121,11 +126,25 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
   const {
     storage, apiKey, screenshotsDir, express,
     jsonLimit = '5mb', mirror, onInsert,
-    sessionSecret = apiKey,
+    sessionSecret,
     sessionTtlDays = 7,
     cookieName = 'wak_session',
     cookieSecure = false,
   } = opts;
+
+  if (!sessionSecret || typeof sessionSecret !== 'string' || sessionSecret.length < 16) {
+    throw new Error(
+      "web-annotate-kit: createReviewRouter requires a strong `sessionSecret` (>= 16 chars). " +
+      "It must NOT equal `apiKey` (which ships in the client bundle). " +
+      "Generate one with `openssl rand -hex 32` and store it in your env.",
+    );
+  }
+  if (sessionSecret === apiKey) {
+    throw new Error(
+      "web-annotate-kit: `sessionSecret` must NOT equal `apiKey`. " +
+      "`apiKey` is publicly readable from the client bundle; reusing it lets anyone forge sessions.",
+    );
+  }
 
   if (!existsSync(screenshotsDir)) mkdirSync(screenshotsDir, { recursive: true });
 
@@ -252,6 +271,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
           // Authorship is enforced server-side: the author is the session user.
           const record: ReviewRecord = {
             id: String(data.id),
+            authorId: me.id,
             author: me.name,
             authorColor: me.color,
             page: String(data.page),
@@ -266,6 +286,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
             notes: [],
             acceptedAt: null,
             acceptedBy: null,
+            acceptedById: null,
             section: (data.section as string) ?? null,
             nearestText: (data.nearestText as string) ?? null,
             selector: (data.selector as string) ?? null,
@@ -285,18 +306,35 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
           break;
         }
         case 'update-screenshot': {
-          // Screenshot uploads belong to an in-flight 'add' performed by the same session user.
-          await storage.reviews.updateScreenshot(String(data.id), String(data.screenshotUrl));
+          const id = String(data.id);
+          const url = String(data.screenshotUrl ?? '');
+          // Strict allow-list: only same-origin /screenshots/<safe>.png URLs.
+          // Blocks javascript:, data: and arbitrary URLs that would XSS via <a href>.
+          if (!/^\/screenshots\/[a-zA-Z0-9_-]+\.png$/.test(url)) {
+            return res.status(400).json({ error: 'Invalid screenshot URL' });
+          }
+          const target = (await storage.reviews.list()).find((r) => r.id === id);
+          if (!target) return res.status(404).json({ error: 'Comment not found' });
+          if (!canActOnComment(me, 'edit', target)) return res.status(403).json({ error: 'Not allowed' });
+          await storage.reviews.updateScreenshot(id, url);
           break;
         }
         case 'resolve': {
           const id = String(data.id);
           const target = (await storage.reviews.list()).find((r) => r.id === id);
           if (!target) return res.status(404).json({ error: 'Comment not found' });
-          // Toggle: open/accepted → resolved; resolved → open
-          const wantedAction: ReviewAction = target.status === 'resolved' ? 'reopen' : 'resolve';
-          if (!canActOnComment(me, wantedAction, target)) return res.status(403).json({ error: 'Not allowed' });
-          await storage.reviews.setStatus(id, target.status === 'resolved' ? 'open' : 'resolved');
+          if (target.status === 'resolved') {
+            // Reopen path: resolved → open. Strips acceptance metadata so it must be re-accepted.
+            if (!canActOnComment(me, 'reopen', target)) return res.status(403).json({ error: 'Not allowed' });
+            await storage.reviews.setStatus(id, 'open');
+          } else {
+            // Strict gate: only `accepted` comments can be resolved.
+            if (target.status !== 'accepted') {
+              return res.status(409).json({ error: "Comment must be accepted by a lead before it can be resolved." });
+            }
+            if (!canActOnComment(me, 'resolve', target)) return res.status(403).json({ error: 'Not allowed' });
+            await storage.reviews.setStatus(id, 'resolved');
+          }
           break;
         }
         case 'accept': {
@@ -304,15 +342,23 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
           const target = (await storage.reviews.list()).find((r) => r.id === id);
           if (!target) return res.status(404).json({ error: 'Comment not found' });
           if (!canActOnComment(me, 'accept', target)) return res.status(403).json({ error: 'Not allowed' });
-          await storage.reviews.setStatus(id, 'accepted', { acceptedBy: me.name, acceptedAt: new Date().toISOString() });
+          await storage.reviews.setStatus(id, 'accepted', {
+            acceptedBy: me.name,
+            acceptedById: me.id,
+            acceptedAt: new Date().toISOString(),
+          });
           break;
         }
         case 'add-note': {
           const id = String(data.id);
           const text = String(data.text || '').trim();
           if (!text) return res.status(400).json({ error: 'Empty note' });
+          // Validate the parent exists so we don't silently drop notes.
+          const target = (await storage.reviews.list()).find((r) => r.id === id);
+          if (!target) return res.status(404).json({ error: 'Comment not found' });
           await storage.reviews.addNote(id, {
             id: cryptoRandomId(),
+            authorId: me.id,
             author: me.name,
             authorColor: me.color,
             text,
@@ -346,9 +392,15 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
 
   router.post('/screenshots', requireSession, async (req, res) => {
     try {
+      const me = req.wakUser!;
       const { id, image } = req.body as { id?: string; image?: string };
       if (!id || !image) return res.status(400).json({ error: 'Missing id or image' });
       if (!image.startsWith('data:image/png;base64,')) return res.status(400).json({ error: 'Invalid image format' });
+
+      // The screenshot is keyed by the parent comment id. Authorize against that comment.
+      const target = (await storage.reviews.list()).find((r) => r.id === id);
+      if (!target) return res.status(404).json({ error: 'Comment not found' });
+      if (!canActOnComment(me, 'edit', target)) return res.status(403).json({ error: 'Not allowed' });
 
       const filename = safeFilename(id);
       const filepath = join(screenshotsDir, filename);
@@ -375,11 +427,22 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     }
   });
 
-  router.delete('/screenshots/:file', requireSession, (req, res) => {
-    const filename = safeFilename(basename(req.params.file).replace(/\.png$/i, ''));
-    const filepath = join(screenshotsDir, filename);
+  router.delete('/screenshots/:file', requireSession, async (req, res) => {
     try {
+      const me = req.wakUser!;
+      const filename = safeFilename(basename(req.params.file).replace(/\.png$/i, ''));
+      const targetUrl = `/screenshots/${filename}`;
+      // Find the review that owns this screenshot. If none → 404 (don't let admins
+      // wander the filesystem; screenshots only exist in relation to a comment).
+      const target = (await storage.reviews.list()).find((r) => r.screenshotUrl === targetUrl);
+      if (!target) return res.status(404).json({ error: 'Screenshot not linked to any comment' });
+      if (!canActOnComment(me, 'edit', target) && !canActOnComment(me, 'delete', target)) {
+        return res.status(403).json({ error: 'Not allowed' });
+      }
+      const filepath = join(screenshotsDir, filename);
       if (existsSync(filepath)) unlinkSync(filepath);
+      // Also clear the URL from the row so the UI doesn't render a broken image.
+      await storage.reviews.updateScreenshot(target.id, null);
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

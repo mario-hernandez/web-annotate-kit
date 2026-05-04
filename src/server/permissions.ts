@@ -16,11 +16,17 @@ export type ReviewAction =
 export function canActOnComment(
   user: Pick<UserRecord, 'id' | 'name' | 'role' | 'departmentId'>,
   action: ReviewAction,
-  comment: Pick<ReviewRecord, 'author' | 'department' | 'status'>,
+  comment: Pick<ReviewRecord, 'authorId' | 'author' | 'department' | 'status'>,
 ): boolean {
   if (!user) return false;
 
-  const isMine = comment.author === user.name;
+  // Identity is keyed to the immutable user id. For legacy rows without an authorId
+  // (imported from < v0.3), fall back to the display name — those rows lose strong
+  // authorship identity but at least preserve "looks like mine" for the original creator.
+  const isMine = comment.authorId
+    ? comment.authorId === user.id
+    : comment.author === user.name;
+
   const isLeadOfThisDept =
     user.role === 'lead' && (comment.department === user.departmentId || comment.department === 'general');
 
@@ -39,9 +45,12 @@ export function canActOnComment(
       if (comment.status !== 'open') return false;
       return isLeadOfThisDept || user.role === 'director' || user.role === 'admin';
     case 'resolve':
-      // only director/admin (after acceptance, but we don't strictly enforce sequencing).
+      // strict gate: only accepted comments can be resolved (director/admin escalation flow).
+      if (comment.status !== 'accepted') return false;
       return user.role === 'director' || user.role === 'admin';
     case 'reopen':
+      // resolved → open. Director/admin only.
+      if (comment.status !== 'resolved') return false;
       return user.role === 'director' || user.role === 'admin';
   }
 }

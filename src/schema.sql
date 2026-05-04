@@ -3,7 +3,8 @@
 
 CREATE TABLE IF NOT EXISTS reviews (
   id             TEXT PRIMARY KEY,
-  author         TEXT NOT NULL,
+  author_id      TEXT,                 -- stable user id; nullable for legacy rows imported from < v0.3
+  author         TEXT NOT NULL,        -- display name at creation time (presentation only)
   author_color   TEXT,
   page           TEXT NOT NULL,
   x              REAL NOT NULL,         -- percent of viewport width (0-100)
@@ -16,7 +17,8 @@ CREATE TABLE IF NOT EXISTS reviews (
   department     TEXT NOT NULL DEFAULT 'general',
   notes          TEXT NOT NULL DEFAULT '[]',   -- JSON array of ReviewNote
   accepted_at    TEXT,
-  accepted_by    TEXT,
+  accepted_by    TEXT,                 -- display name (presentation)
+  accepted_by_id TEXT,                 -- stable user id
   section        TEXT,
   nearest_text   TEXT,
   selector       TEXT,

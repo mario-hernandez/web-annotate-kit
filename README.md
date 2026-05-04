@@ -94,7 +94,7 @@ await seedIfEmpty(storage, {
 app.use('/api', createReviewRouter({
   storage,
   apiKey: process.env.REVIEW_API_KEY,
-  sessionSecret: process.env.REVIEW_SESSION_SECRET, // sign session cookies. Defaults to apiKey.
+  sessionSecret: process.env.REVIEW_SESSION_SECRET, // mandatory; ≥16 chars; must NOT equal apiKey
   screenshotsDir: './screenshots',
   express,
 }));
@@ -257,7 +257,7 @@ app.use('/api', createReviewRouter({
 **Honest disclosure — read before deploying:**
 
 - Passwords are hashed with **scrypt** server-side (Node native, no extra deps).
-- Authentication issues an **HTTP-only signed session cookie** (HMAC-SHA256). The cookie is unreadable from JS, so XSS can't steal it. The signing key is `sessionSecret` (defaults to `apiKey`; override in production with a strong, separate value).
+- Authentication issues an **HTTP-only signed session cookie** (HMAC-SHA256). The cookie is unreadable from JS, so XSS can't steal it. The signing key is `sessionSecret` (mandatory, ≥16 chars, must NOT equal `apiKey` — `apiKey` ships in the client bundle; reusing it would let anyone forge sessions). Generate with `openssl rand -hex 32`.
 - Permissions are enforced server-side from the session — a reviewer can't curl-delete others' pins; a lead can't accept comments outside their department.
 - The `apiKey` is still embedded in the client bundle (used only for the login endpoint). It's the gate to the password form, not the gate to the data.
 - Client-side rate-limit on failed logins lives in `localStorage` (easy to bypass). Add `express-rate-limit` server-side for hostile traffic.

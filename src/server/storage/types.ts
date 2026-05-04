@@ -4,6 +4,7 @@ export type ReviewStatus = 'open' | 'accepted' | 'resolved';
 
 export interface ReviewNoteRecord {
   id: string;
+  authorId: string | null;
   author: string;
   authorColor: string;
   text: string;
@@ -12,6 +13,8 @@ export interface ReviewNoteRecord {
 
 export interface ReviewRecord {
   id: string;
+  /** Stable id of the author user. Null for legacy rows imported from < v0.3. */
+  authorId: string | null;
   author: string;
   authorColor: string | null;
   page: string;
@@ -26,6 +29,7 @@ export interface ReviewRecord {
   notes: ReviewNoteRecord[];
   acceptedAt: string | null;
   acceptedBy: string | null;
+  acceptedById: string | null;
   section: string | null;
   nearestText: string | null;
   selector: string | null;
@@ -37,8 +41,8 @@ export interface ReviewStorage {
   list(): Promise<ReviewRecord[]>;
   insert(record: ReviewRecord): Promise<void>;
   updateText(id: string, text: string, updatedAt: string): Promise<void>;
-  updateScreenshot(id: string, screenshotUrl: string): Promise<void>;
-  setStatus(id: string, status: ReviewStatus, opts?: { acceptedBy?: string; acceptedAt?: string }): Promise<void>;
+  updateScreenshot(id: string, screenshotUrl: string | null): Promise<void>;
+  setStatus(id: string, status: ReviewStatus, opts?: { acceptedBy?: string; acceptedById?: string; acceptedAt?: string }): Promise<void>;
   /** Legacy: kept for back-compat. Toggles between open and resolved. */
   toggleResolved(id: string): Promise<void>;
   addNote(id: string, note: ReviewNoteRecord): Promise<void>;
