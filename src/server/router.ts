@@ -112,6 +112,7 @@ export async function seedIfEmpty(
         color: u.color,
         role: u.role,
         departmentId: u.departmentId ?? null,
+        sessionVersion: 1,
         createdAt: now,
       });
       seededUsers++;
@@ -209,6 +210,12 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     if (!payload) return res.status(401).json({ error: 'Session expired or invalid' });
     const user = await storage.users.findById(payload.uid);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
+    // Revocation check: if the user's password was changed (sessionVersion bumped),
+    // older cookies are immediately invalid even if their HMAC is still good.
+    if (payload.sv !== user.sessionVersion) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: 'Session revoked' });
+    }
     req.wakUser = user;
     next?.();
   };
@@ -230,7 +237,10 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       if (!password || typeof password !== 'string') return res.status(400).json({ error: 'Missing password' });
       const user = await storage.users.findByPassword(password.trim());
       if (!user) return res.status(401).json({ error: 'Wrong password' });
-      const token = signSession({ uid: user.id, role: user.role }, sessionSecret, sessionTtlMs);
+      const token = signSession(
+        { uid: user.id, role: user.role, sv: user.sessionVersion },
+        sessionSecret, sessionTtlMs,
+      );
       setSessionCookie(res, token);
       res.json({ user: publicUser(user) });
     } catch (e) {
@@ -521,9 +531,14 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         role?: UserRecord['role']; departmentId?: string | null;
       };
       if (!id || !name || !password || !role) return res.status(400).json({ error: 'id, name, password, role are required' });
+      // Reject duplicate access codes — login is keyed by password, so two users
+      // sharing one would let one of them silently impersonate the other.
+      const existing = await storage.users.findByPassword(password);
+      if (existing) return res.status(409).json({ error: 'Access code already in use' });
       await storage.users.insert({
         id, name, passwordHash: hashPassword(password),
         color: color ?? '#6B7280', role, departmentId: departmentId ?? null,
+        sessionVersion: 1,
         createdAt: new Date().toISOString(),
       });
       const all = await storage.users.list();
@@ -540,12 +555,38 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         name?: string; password?: string; color?: string;
         role?: UserRecord['role']; departmentId?: string | null;
       };
+
+      // Last-admin guard: reject any role change that would leave the org with zero admins.
+      // Self-demotion of the only admin would otherwise lock everyone out of the admin panel,
+      // and `seedIfEmpty` only re-seeds when the table is empty (= manual DB repair incident).
+      if (role !== undefined && role !== 'admin') {
+        const all = await storage.users.list();
+        const target = all.find((u) => u.id === id);
+        if (target?.role === 'admin') {
+          const remainingAdmins = all.filter((u) => u.role === 'admin' && u.id !== id).length;
+          if (remainingAdmins === 0) {
+            return res.status(400).json({ error: 'Cannot demote the last admin' });
+          }
+        }
+      }
+
       const patch: Partial<Omit<UserRecord, 'id' | 'createdAt'>> = {};
       if (name !== undefined) patch.name = name;
       if (color !== undefined) patch.color = color;
       if (role !== undefined) patch.role = role;
       if (departmentId !== undefined) patch.departmentId = departmentId;
-      if (password) patch.passwordHash = hashPassword(password);
+      if (password) {
+        // Reject duplicate access codes (excluding the user being edited).
+        const existing = await storage.users.findByPassword(password);
+        if (existing && existing.id !== id) {
+          return res.status(409).json({ error: 'Access code already in use' });
+        }
+        patch.passwordHash = hashPassword(password);
+        // Invalidate every active session for this user. If the admin reset the code
+        // because it leaked, any existing browser cookie must stop working immediately.
+        const current = await storage.users.findById(id);
+        patch.sessionVersion = (current?.sessionVersion ?? 1) + 1;
+      }
       await storage.users.update(id, patch);
       const all = await storage.users.list();
       res.json(all.map(publicUser));

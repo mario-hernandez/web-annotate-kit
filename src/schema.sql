@@ -1,6 +1,18 @@
 -- web-annotate-kit — schema
 -- Compatible with SQLite, libsql (Turso), and PostgreSQL with minor adjustments.
 
+CREATE TABLE IF NOT EXISTS wak_notes (
+  id          TEXT PRIMARY KEY,
+  review_id   TEXT NOT NULL,
+  author_id   TEXT,
+  author      TEXT NOT NULL,
+  author_color TEXT NOT NULL,
+  text        TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wak_notes_review_id ON wak_notes(review_id);
+CREATE INDEX IF NOT EXISTS idx_wak_notes_created_at ON wak_notes(created_at);
+
 CREATE TABLE IF NOT EXISTS reviews (
   id             TEXT PRIMARY KEY,
   author_id      TEXT,                 -- stable user id; nullable for legacy rows imported from < v0.3
@@ -38,13 +50,14 @@ CREATE TABLE IF NOT EXISTS wak_departments (
 );
 
 CREATE TABLE IF NOT EXISTS wak_users (
-  id             TEXT PRIMARY KEY,
-  name           TEXT NOT NULL,
-  password_hash  TEXT NOT NULL,        -- scrypt(password, salt) hex; format: "scrypt$<salt>$<hash>"
-  color          TEXT NOT NULL DEFAULT '#6B7280',
-  role           TEXT NOT NULL,        -- 'reviewer' | 'lead' | 'director' | 'admin'
-  department_id  TEXT,
-  created_at     TEXT NOT NULL
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  password_hash   TEXT NOT NULL,        -- scrypt(password, salt) hex; format: "scrypt$<salt>$<hash>"
+  color           TEXT NOT NULL DEFAULT '#6B7280',
+  role            TEXT NOT NULL,        -- 'reviewer' | 'lead' | 'director' | 'admin'
+  department_id   TEXT,
+  session_version INTEGER NOT NULL DEFAULT 1, -- bumped on password change to invalidate active cookies
+  created_at      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_wak_users_role ON wak_users(role);

@@ -18,13 +18,9 @@ interface BetterSqliteDatabase {
 }
 
 function rowToReview(row: Record<string, unknown>): ReviewRecord {
-  let notes: ReviewNoteRecord[] = [];
-  try {
-    const raw = (row.notes as string) ?? '[]';
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) notes = parsed as ReviewNoteRecord[];
-  } catch { /* fall back to empty */ }
-
+  // Notes are loaded separately from wak_notes; this function only builds the
+  // base record. The list() method hydrates notes per-row.
+  const notes: ReviewNoteRecord[] = [];
   const status = ((row.status as string) ?? 'open') as ReviewStatus;
   return {
     id: row.id as string,
@@ -60,6 +56,7 @@ function rowToUser(row: Record<string, unknown>): UserRecord {
     color: row.color as string,
     role: row.role as UserRecord['role'],
     departmentId: (row.department_id as string) ?? null,
+    sessionVersion: Number(row.session_version ?? 1),
     createdAt: row.created_at as string,
   };
 }
@@ -98,6 +95,18 @@ const CREATE_SQL = `
   CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
   CREATE INDEX IF NOT EXISTS idx_reviews_department ON reviews(department);
 
+  CREATE TABLE IF NOT EXISTS wak_notes (
+    id           TEXT PRIMARY KEY,
+    review_id    TEXT NOT NULL,
+    author_id    TEXT,
+    author       TEXT NOT NULL,
+    author_color TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_wak_notes_review_id ON wak_notes(review_id);
+  CREATE INDEX IF NOT EXISTS idx_wak_notes_created_at ON wak_notes(created_at);
+
   CREATE TABLE IF NOT EXISTS wak_departments (
     id    TEXT PRIMARY KEY,
     name  TEXT NOT NULL,
@@ -105,13 +114,14 @@ const CREATE_SQL = `
   );
 
   CREATE TABLE IF NOT EXISTS wak_users (
-    id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    color         TEXT NOT NULL DEFAULT '#6B7280',
-    role          TEXT NOT NULL,
-    department_id TEXT,
-    created_at    TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    password_hash   TEXT NOT NULL,
+    color           TEXT NOT NULL DEFAULT '#6B7280',
+    role            TEXT NOT NULL,
+    department_id   TEXT,
+    session_version INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_wak_users_role ON wak_users(role);
 `;
@@ -149,6 +159,28 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
   ensureColumn(db, 'reviews', 'accepted_by', 'TEXT');
   ensureColumn(db, 'reviews', 'author_id', 'TEXT');
   ensureColumn(db, 'reviews', 'accepted_by_id', 'TEXT');
+  ensureColumn(db, 'wak_users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
+
+  // One-time migration: move JSON notes blob into the new wak_notes table.
+  // Idempotent: only runs when wak_notes is empty AND the legacy `notes` column has rows with non-empty arrays.
+  const noteCount = db.prepare('SELECT COUNT(*) AS c FROM wak_notes').get() as { c: number };
+  if (Number(noteCount.c) === 0) {
+    const legacyRows = db.prepare(`SELECT id, notes FROM reviews WHERE notes IS NOT NULL AND notes != '[]' AND notes != ''`).all() as Array<{ id: string; notes: string }>;
+    for (const row of legacyRows) {
+      try {
+        const arr = JSON.parse(row.notes);
+        if (!Array.isArray(arr)) continue;
+        for (const n of arr as ReviewNoteRecord[]) {
+          db.prepare(
+            `INSERT OR IGNORE INTO wak_notes (id, review_id, author_id, author, author_color, text, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            n.id, row.id, n.authorId ?? null, n.author, n.authorColor ?? '#6B7280', n.text, n.createdAt,
+          );
+        }
+      } catch { /* ignore malformed legacy rows */ }
+    }
+  }
 
   // Backfill: any pre-existing row with resolved=1 gets status='resolved'
   db.exec(`UPDATE reviews SET status = 'resolved' WHERE resolved = 1 AND (status IS NULL OR status = 'open')`);
@@ -157,17 +189,36 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
   const reviews: ReviewStorage = {
     async list() {
       const rows = db.prepare('SELECT * FROM reviews ORDER BY created_at ASC').all() as Record<string, unknown>[];
-      return rows.map(rowToReview);
+      const reviewsList = rows.map(rowToReview);
+      if (reviewsList.length === 0) return reviewsList;
+      const noteRows = db.prepare('SELECT * FROM wak_notes ORDER BY created_at ASC').all() as Array<{
+        id: string; review_id: string; author_id: string | null;
+        author: string; author_color: string; text: string; created_at: string;
+      }>;
+      const byReview = new Map<string, ReviewNoteRecord[]>();
+      for (const n of noteRows) {
+        const arr = byReview.get(n.review_id) ?? [];
+        arr.push({
+          id: n.id, authorId: n.author_id ?? null,
+          author: n.author, authorColor: n.author_color,
+          text: n.text, createdAt: n.created_at,
+        });
+        byReview.set(n.review_id, arr);
+      }
+      for (const r of reviewsList) r.notes = byReview.get(r.id) ?? [];
+      return reviewsList;
     },
     async insert(r) {
+      // `notes` column is legacy (kept for backwards compat); always written as '[]'.
+      // Real notes live in wak_notes.
       db.prepare(
         `INSERT INTO reviews (id, author_id, author, author_color, page, x, y, text, created_at, updated_at,
                                resolved, status, department, notes, accepted_at, accepted_by, accepted_by_id,
                                section, nearest_text, selector, tag_name, screenshot_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         r.id, r.authorId, r.author, r.authorColor, r.page, r.x, r.y, r.text, r.createdAt, r.updatedAt,
-        r.status === 'resolved' ? 1 : 0, r.status, r.department, JSON.stringify(r.notes ?? []),
+        r.status === 'resolved' ? 1 : 0, r.status, r.department,
         r.acceptedAt, r.acceptedBy, r.acceptedById,
         r.section, r.nearestText, r.selector, r.tagName, r.screenshotUrl,
       );
@@ -197,15 +248,18 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
       db.prepare('UPDATE reviews SET status = ?, resolved = ? WHERE id = ?').run(next, next === 'resolved' ? 1 : 0, id);
     },
     async addNote(id, note: ReviewNoteRecord) {
-      const row = db.prepare('SELECT notes FROM reviews WHERE id = ?').get(id) as { notes: string } | undefined;
-      if (!row) return;
-      let arr: ReviewNoteRecord[] = [];
-      try { const p = JSON.parse(row.notes ?? '[]'); if (Array.isArray(p)) arr = p; } catch { /* ignore */ }
-      arr.push(note);
-      db.prepare('UPDATE reviews SET notes = ? WHERE id = ?').run(JSON.stringify(arr), id);
+      // Atomic INSERT — no read-modify-write, so concurrent appends can't overwrite each other.
+      // Fails silently if the parent review doesn't exist (FK-less but the router validates).
+      const exists = db.prepare('SELECT 1 FROM reviews WHERE id = ?').get(id);
+      if (!exists) return;
+      db.prepare(
+        `INSERT INTO wak_notes (id, review_id, author_id, author, author_color, text, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(note.id, id, note.authorId ?? null, note.author, note.authorColor, note.text, note.createdAt);
     },
     async delete(id) {
       const row = db.prepare('SELECT screenshot_url FROM reviews WHERE id = ?').get(id) as { screenshot_url: string | null } | undefined;
+      db.prepare('DELETE FROM wak_notes WHERE review_id = ?').run(id);
       db.prepare('DELETE FROM reviews WHERE id = ?').run(id);
       return row?.screenshot_url ?? null;
     },
@@ -231,15 +285,19 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
     },
     async insert(record) {
       db.prepare(
-        `INSERT INTO wak_users (id, name, password_hash, color, role, department_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(record.id, record.name, record.passwordHash, record.color, record.role, record.departmentId, record.createdAt);
+        `INSERT INTO wak_users (id, name, password_hash, color, role, department_id, session_version, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id, record.name, record.passwordHash, record.color, record.role,
+        record.departmentId, record.sessionVersion ?? 1, record.createdAt,
+      );
     },
     async update(id, patch) {
       const fields: string[] = [];
       const args: unknown[] = [];
       const map: Record<string, string> = {
-        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role', departmentId: 'department_id',
+        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role',
+        departmentId: 'department_id', sessionVersion: 'session_version',
       };
       for (const k of Object.keys(patch) as Array<keyof typeof patch>) {
         const col = map[k as string];

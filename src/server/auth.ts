@@ -29,6 +29,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 interface SessionPayload {
   uid: string;          // user id
   role: UserRole;       // duplicated for fast permission checks
+  sv: number;           // session version — must match user's current sessionVersion to be valid
   iat: number;          // issued-at (epoch ms)
   exp: number;          // expires-at (epoch ms)
 }
@@ -41,7 +42,11 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64');
 }
 
-export function signSession(payload: Omit<SessionPayload, 'iat' | 'exp'>, secret: string, ttlMs: number): string {
+export function signSession(
+  payload: Omit<SessionPayload, 'iat' | 'exp'>,
+  secret: string,
+  ttlMs: number,
+): string {
   const now = Date.now();
   const full: SessionPayload = { ...payload, iat: now, exp: now + ttlMs };
   const body = b64urlEncode(Buffer.from(JSON.stringify(full)));
@@ -59,6 +64,7 @@ export function verifySession(token: string, secret: string): SessionPayload | n
   try {
     const payload = JSON.parse(b64urlDecode(body).toString()) as SessionPayload;
     if (typeof payload.exp !== 'number' || Date.now() >= payload.exp) return null;
+    if (typeof payload.sv !== 'number') return null; // legacy tokens without sv → invalid
     return payload;
   } catch {
     return null;

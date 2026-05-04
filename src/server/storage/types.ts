@@ -60,6 +60,8 @@ export interface UserRecord {
   color: string;
   role: UserRole;
   departmentId: string | null;
+  /** Bumped on every password change. Embedded in session tokens; mismatched cookies are rejected. */
+  sessionVersion: number;
   createdAt: string;
 }
 

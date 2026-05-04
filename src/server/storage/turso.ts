@@ -16,13 +16,7 @@ interface LibsqlClient {
 }
 
 function rowToReview(row: Record<string, unknown>): ReviewRecord {
-  let notes: ReviewNoteRecord[] = [];
-  try {
-    const raw = (row.notes as string) ?? '[]';
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) notes = parsed as ReviewNoteRecord[];
-  } catch { /* ignore */ }
-
+  const notes: ReviewNoteRecord[] = [];
   const status = ((row.status as string) ?? 'open') as ReviewStatus;
   return {
     id: row.id as string,
@@ -58,6 +52,7 @@ function rowToUser(row: Record<string, unknown>): UserRecord {
     color: row.color as string,
     role: row.role as UserRecord['role'],
     departmentId: (row.department_id as string) ?? null,
+    sessionVersion: Number(row.session_version ?? 1),
     createdAt: row.created_at as string,
   };
 }
@@ -108,8 +103,16 @@ export async function tursoStorage(options: TursoOptions): Promise<{
     await db.execute(`CREATE TABLE IF NOT EXISTS wak_users (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, password_hash TEXT NOT NULL,
       color TEXT NOT NULL DEFAULT '#6B7280', role TEXT NOT NULL,
-      department_id TEXT, created_at TEXT NOT NULL
+      department_id TEXT, session_version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
     )`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS wak_notes (
+      id TEXT PRIMARY KEY, review_id TEXT NOT NULL,
+      author_id TEXT, author TEXT NOT NULL, author_color TEXT NOT NULL,
+      text TEXT NOT NULL, created_at TEXT NOT NULL
+    )`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_wak_notes_review_id ON wak_notes(review_id)`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_wak_notes_created_at ON wak_notes(created_at)`);
     // Migrations for pre-0.3 databases
     await ensureColumn(db, 'reviews', 'status', "TEXT NOT NULL DEFAULT 'open'");
     await ensureColumn(db, 'reviews', 'department', "TEXT NOT NULL DEFAULT 'general'");
@@ -118,23 +121,61 @@ export async function tursoStorage(options: TursoOptions): Promise<{
     await ensureColumn(db, 'reviews', 'accepted_by', 'TEXT');
     await ensureColumn(db, 'reviews', 'author_id', 'TEXT');
     await ensureColumn(db, 'reviews', 'accepted_by_id', 'TEXT');
+    await ensureColumn(db, 'wak_users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
+
+    // One-time migration: move JSON notes blob into wak_notes.
+    const noteCount = await db.execute('SELECT COUNT(*) AS c FROM wak_notes');
+    if (Number(noteCount.rows[0]?.c ?? 0) === 0) {
+      const legacyRows = await db.execute(
+        `SELECT id, notes FROM reviews WHERE notes IS NOT NULL AND notes != '[]' AND notes != ''`,
+      );
+      for (const row of legacyRows.rows) {
+        try {
+          const arr = JSON.parse((row.notes as string) ?? '[]');
+          if (!Array.isArray(arr)) continue;
+          for (const n of arr as ReviewNoteRecord[]) {
+            await db.execute({
+              sql: `INSERT OR IGNORE INTO wak_notes (id, review_id, author_id, author, author_color, text, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              args: [n.id, row.id as string, n.authorId ?? null, n.author, n.authorColor ?? '#6B7280', n.text, n.createdAt],
+            });
+          }
+        } catch { /* ignore malformed legacy rows */ }
+      }
+    }
     await db.execute(`UPDATE reviews SET status = 'resolved' WHERE resolved = 1 AND (status IS NULL OR status = 'open')`);
   }
 
   const reviews: ReviewStorage = {
     async list() {
       const r = await db.execute('SELECT * FROM reviews ORDER BY created_at ASC');
-      return r.rows.map(rowToReview);
+      const reviewsList = r.rows.map(rowToReview);
+      if (reviewsList.length === 0) return reviewsList;
+      const noteRows = await db.execute('SELECT * FROM wak_notes ORDER BY created_at ASC');
+      const byReview = new Map<string, ReviewNoteRecord[]>();
+      for (const n of noteRows.rows) {
+        const reviewId = n.review_id as string;
+        const arr = byReview.get(reviewId) ?? [];
+        arr.push({
+          id: n.id as string, authorId: (n.author_id as string) ?? null,
+          author: n.author as string, authorColor: n.author_color as string,
+          text: n.text as string, createdAt: n.created_at as string,
+        });
+        byReview.set(reviewId, arr);
+      }
+      for (const rv of reviewsList) rv.notes = byReview.get(rv.id) ?? [];
+      return reviewsList;
     },
     async insert(r) {
+      // Legacy `notes` column is always written as '[]'; real notes live in wak_notes.
       await db.execute({
         sql: `INSERT INTO reviews (id, author_id, author, author_color, page, x, y, text, created_at, updated_at,
                                     resolved, status, department, notes, accepted_at, accepted_by, accepted_by_id,
                                     section, nearest_text, selector, tag_name, screenshot_url)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           r.id, r.authorId, r.author, r.authorColor, r.page, r.x, r.y, r.text, r.createdAt, r.updatedAt,
-          r.status === 'resolved' ? 1 : 0, r.status, r.department, JSON.stringify(r.notes ?? []),
+          r.status === 'resolved' ? 1 : 0, r.status, r.department,
           r.acceptedAt, r.acceptedBy, r.acceptedById,
           r.section, r.nearestText, r.selector, r.tagName, r.screenshotUrl,
         ],
@@ -164,16 +205,19 @@ export async function tursoStorage(options: TursoOptions): Promise<{
       await db.execute({ sql: 'UPDATE reviews SET status = ?, resolved = ? WHERE id = ?', args: [next, next === 'resolved' ? 1 : 0, id] });
     },
     async addNote(id, note: ReviewNoteRecord) {
-      const cur = await db.execute({ sql: 'SELECT notes FROM reviews WHERE id = ?', args: [id] });
-      if (!cur.rows.length) return;
-      let arr: ReviewNoteRecord[] = [];
-      try { const p = JSON.parse((cur.rows[0].notes as string) ?? '[]'); if (Array.isArray(p)) arr = p; } catch { /* ignore */ }
-      arr.push(note);
-      await db.execute({ sql: 'UPDATE reviews SET notes = ? WHERE id = ?', args: [JSON.stringify(arr), id] });
+      // Atomic INSERT: concurrent appends serialize at the database, no read-modify-write.
+      const exists = await db.execute({ sql: 'SELECT 1 FROM reviews WHERE id = ?', args: [id] });
+      if (!exists.rows.length) return;
+      await db.execute({
+        sql: `INSERT INTO wak_notes (id, review_id, author_id, author, author_color, text, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [note.id, id, note.authorId ?? null, note.author, note.authorColor, note.text, note.createdAt],
+      });
     },
     async delete(id) {
       const row = await db.execute({ sql: 'SELECT screenshot_url FROM reviews WHERE id = ?', args: [id] });
       const url = row.rows[0] ? ((row.rows[0].screenshot_url as string | null) ?? null) : null;
+      await db.execute({ sql: 'DELETE FROM wak_notes WHERE review_id = ?', args: [id] });
       await db.execute({ sql: 'DELETE FROM reviews WHERE id = ?', args: [id] });
       return url;
     },
@@ -198,16 +242,20 @@ export async function tursoStorage(options: TursoOptions): Promise<{
     },
     async insert(record) {
       await db.execute({
-        sql: `INSERT INTO wak_users (id, name, password_hash, color, role, department_id, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [record.id, record.name, record.passwordHash, record.color, record.role, record.departmentId, record.createdAt],
+        sql: `INSERT INTO wak_users (id, name, password_hash, color, role, department_id, session_version, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          record.id, record.name, record.passwordHash, record.color, record.role,
+          record.departmentId, record.sessionVersion ?? 1, record.createdAt,
+        ],
       });
     },
     async update(id, patch) {
       const fields: string[] = [];
       const args: unknown[] = [];
       const map: Record<string, string> = {
-        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role', departmentId: 'department_id',
+        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role',
+        departmentId: 'department_id', sessionVersion: 'session_version',
       };
       for (const k of Object.keys(patch) as Array<keyof typeof patch>) {
         const col = map[k as string];

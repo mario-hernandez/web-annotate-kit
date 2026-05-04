@@ -17,12 +17,25 @@ export function memoryStorage(): {
   const reviews = new Map<string, ReviewRecord>();
   const users = new Map<string, UserRecord>();
   const departments = new Map<string, DepartmentRecord>();
+  // notes live in their own collection so concurrent appends don't race on a JSON blob.
+  const notesByReview = new Map<string, ReviewNoteRecord[]>();
+
+  const hydrateNotes = (r: ReviewRecord): ReviewRecord => ({
+    ...r,
+    notes: (notesByReview.get(r.id) ?? []).slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+  });
 
   const reviewsApi: ReviewStorage = {
     async list() {
-      return [...reviews.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      return [...reviews.values()]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map(hydrateNotes);
     },
-    async insert(r) { reviews.set(r.id, { ...r }); },
+    async insert(r) {
+      reviews.set(r.id, { ...r, notes: [] });
+      // seed any notes that came in the record (typical: empty array on add)
+      if (r.notes && r.notes.length) notesByReview.set(r.id, r.notes.slice());
+    },
     async updateText(id, text, updatedAt) {
       const r = reviews.get(id);
       if (r) reviews.set(id, { ...r, text, updatedAt });
@@ -50,13 +63,15 @@ export function memoryStorage(): {
       reviews.set(id, { ...r, status: next, resolved: next === 'resolved' });
     },
     async addNote(id, note: ReviewNoteRecord) {
-      const r = reviews.get(id);
-      if (!r) return;
-      reviews.set(id, { ...r, notes: [...r.notes, note] });
+      if (!reviews.has(id)) return;
+      const arr = notesByReview.get(id) ?? [];
+      arr.push(note);
+      notesByReview.set(id, arr);
     },
     async delete(id) {
       const r = reviews.get(id);
       reviews.delete(id);
+      notesByReview.delete(id);
       return r?.screenshotUrl ?? null;
     },
   };
