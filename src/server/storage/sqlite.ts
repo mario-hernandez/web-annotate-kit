@@ -272,10 +272,11 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
       return rows.map(rowToUser);
     },
     async findByPassword(password) {
+      // Kept for back-compat; not on the hot path since 0.3.4 (login is keyed by id).
       const rows = db.prepare('SELECT * FROM wak_users').all() as Record<string, unknown>[];
       for (const row of rows) {
         const u = rowToUser(row);
-        if (verifyPassword(password, u.passwordHash)) return u;
+        if (await verifyPassword(password, u.passwordHash)) return u;
       }
       return null;
     },

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { hashPassword, publicUser, signSession, verifySession } from './auth.js';
+import { hashPassword, publicUser, signSession, verifyPassword, verifySession } from './auth.js';
 import { canActOnComment, canManageOrg, type ReviewAction } from './permissions.js';
 import type {
   DepartmentRecord, DepartmentStorage,
@@ -66,6 +66,13 @@ export interface CreateReviewRouterOptions {
   cookieName?: string;
   /** Set `Secure` flag on the session cookie. Default: false. Set true behind HTTPS in production. */
   cookieSecure?: boolean;
+  /**
+   * Path the router is mounted at on the host app (without trailing slash).
+   * Used when constructing screenshot URLs that resolve through the authenticated
+   * GET /screenshots/:file handler. Default: '/api'.
+   * Example: if you mount with `app.use('/api/v2', createReviewRouter(...))` set this to `/api/v2`.
+   */
+  routerMountPath?: string;
   /** Absolute path to the directory where screenshots PNGs are written. */
   screenshotsDir: string;
   /** Express instance from the host app (pass `express` after `import express from 'express'`). */
@@ -131,7 +138,10 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     sessionTtlDays = 7,
     cookieName = 'wak_session',
     cookieSecure = false,
+    routerMountPath = '/api',
   } = opts;
+  // Normalize: strip trailing slash; ensure leading slash.
+  const mountPath = routerMountPath.replace(/\/+$/, '') || '';
 
   if (!sessionSecret || typeof sessionSecret !== 'string' || sessionSecret.length < 16) {
     throw new Error(
@@ -148,6 +158,24 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
   }
 
   if (!existsSync(screenshotsDir)) mkdirSync(screenshotsDir, { recursive: true });
+
+  // One-shot migration: pre-0.3.4 servers persisted screenshot URLs as
+  // `/screenshots/<file>.png`, which only worked when the host app exposed a
+  // public static mount that bypassed authentication. Rewrite them to the
+  // canonical, auth-gated `${mountPath}/screenshots/<file>.png`.
+  void (async () => {
+    try {
+      const all = await storage.reviews.list();
+      for (const r of all) {
+        if (r.screenshotUrl && r.screenshotUrl.startsWith('/screenshots/')) {
+          const fixed = `${mountPath}${r.screenshotUrl}`;
+          await storage.reviews.updateScreenshot(r.id, fixed);
+        }
+      }
+    } catch (e) {
+      console.warn('[web-annotate-kit] screenshot URL migration failed:', (e as Error).message);
+    }
+  })();
 
   const router = express.Router();
   const sessionTtlMs = sessionTtlDays * 86400000;
@@ -233,16 +261,35 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
 
   router.post('/auth/login', requireApiKey, async (req, res) => {
     try {
-      const { password } = (req.body ?? {}) as { password?: string };
-      if (!password || typeof password !== 'string') return res.status(400).json({ error: 'Missing password' });
-      const user = await storage.users.findByPassword(password.trim());
-      if (!user) return res.status(401).json({ error: 'Wrong password' });
+      const { id, password } = (req.body ?? {}) as { id?: string; password?: string };
+      if (!id || !password || typeof id !== 'string' || typeof password !== 'string') {
+        return res.status(400).json({ error: 'Missing id or password' });
+      }
+      // Per-id + per-IP rate limit. Throttles brute-force attempts without
+      // affecting legitimate users on other accounts.
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+        || (req as unknown as { ip?: string }).ip
+        || 'unknown';
+      const rlKey = `${id.trim()}::${ip}`;
+      if (loginIsLocked(rlKey)) {
+        return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' });
+      }
+      const user = await storage.users.findById(id.trim());
+      // Always run verifyPassword (against a dummy hash if user is missing) so timing
+      // doesn't leak which ids exist in the table.
+      const candidateHash = user?.passwordHash ?? DUMMY_HASH;
+      const ok = (await verifyPassword(password.trim(), candidateHash)) && !!user;
+      if (!ok) {
+        recordLoginFailure(rlKey);
+        return res.status(401).json({ error: 'Wrong id or password' });
+      }
+      clearLoginFailures(rlKey);
       const token = signSession(
-        { uid: user.id, role: user.role, sv: user.sessionVersion },
+        { uid: user!.id, role: user!.role, sv: user!.sessionVersion },
         sessionSecret, sessionTtlMs,
       );
       setSessionCookie(res, token);
-      res.json({ user: publicUser(user) });
+      res.json({ user: publicUser(user!) });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
@@ -318,9 +365,14 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         case 'update-screenshot': {
           const id = String(data.id);
           const url = String(data.screenshotUrl ?? '');
-          // Strict allow-list: only same-origin /screenshots/<safe>.png URLs.
+          // Strict allow-list: must point at the authenticated router endpoint.
           // Blocks javascript:, data: and arbitrary URLs that would XSS via <a href>.
-          if (!/^\/screenshots\/[a-zA-Z0-9_-]+\.png$/.test(url)) {
+          // Accept legacy /screenshots/... too — older clients still send that shape;
+          // the migration on boot rewrites stored values to /api/screenshots/.
+          const expected = new RegExp(
+            `^(${mountPath.replace(/[/.\\^$*+?()[\\]{}|]/g, '\\$&')}|)/screenshots/[a-zA-Z0-9_-]+\\.png$`,
+          );
+          if (!expected.test(url)) {
             return res.status(400).json({ error: 'Invalid screenshot URL' });
           }
           const target = (await storage.reviews.list()).find((r) => r.id === id);
@@ -417,7 +469,8 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       const base64Data = image.replace(/^data:image\/png;base64,/, '');
       writeFileSync(filepath, Buffer.from(base64Data, 'base64'));
 
-      const url = `/screenshots/${filename}`;
+      // URL resolves through the AUTHENTICATED router endpoint, not a public static mount.
+      const url = `${mountPath}/screenshots/${filename}`;
       res.json({ url });
 
       if (mirror) {
@@ -441,10 +494,9 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     try {
       const me = req.wakUser!;
       const filename = safeFilename(basename(req.params.file).replace(/\.png$/i, ''));
-      const targetUrl = `/screenshots/${filename}`;
-      // Find the review that owns this screenshot. If none → 404 (don't let admins
-      // wander the filesystem; screenshots only exist in relation to a comment).
-      const target = (await storage.reviews.list()).find((r) => r.screenshotUrl === targetUrl);
+      // Match both the v0.3.4+ canonical URL and the legacy /screenshots/ form.
+      const candidates = [`${mountPath}/screenshots/${filename}`, `/screenshots/${filename}`];
+      const target = (await storage.reviews.list()).find((r) => r.screenshotUrl && candidates.includes(r.screenshotUrl));
       if (!target) return res.status(404).json({ error: 'Screenshot not linked to any comment' });
       if (!canActOnComment(me, 'edit', target) && !canActOnComment(me, 'delete', target)) {
         return res.status(403).json({ error: 'Not allowed' });
@@ -531,21 +583,22 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         role?: UserRecord['role']; departmentId?: string | null;
       };
       if (!id || !name || !password || !role) return res.status(400).json({ error: 'id, name, password, role are required' });
-      // Pre-check (cheap path); the post-check after insert catches concurrent races.
-      const existing = await storage.users.findByPassword(password);
-      if (existing) return res.status(409).json({ error: 'Access code already in use' });
-      await storage.users.insert({
-        id, name, passwordHash: hashPassword(password),
-        color: color ?? '#6B7280', role, departmentId: departmentId ?? null,
-        sessionVersion: 1,
-        createdAt: new Date().toISOString(),
-      });
-      // Post-check: if a concurrent request committed the same code, undo our insert.
-      // This closes the read-then-write race the adversarial review flagged.
-      const after = await storage.users.findByPassword(password);
-      if (after && after.id !== id) {
-        await storage.users.delete(id);
-        return res.status(409).json({ error: 'Access code collision detected — assign a different code' });
+      if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      // Login is now keyed by id, so passwords don't need to be unique. The id itself
+      // is the unique identifier — the storage layer rejects duplicates via PRIMARY KEY.
+      try {
+        await storage.users.insert({
+          id, name, passwordHash: hashPassword(password),
+          color: color ?? '#6B7280', role, departmentId: departmentId ?? null,
+          sessionVersion: 1,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        const msg = String((e as Error).message || '');
+        if (/UNIQUE|PRIMARY|already exists/i.test(msg)) {
+          return res.status(409).json({ error: `User id "${id}" already exists` });
+        }
+        throw e;
       }
       const all = await storage.users.list();
       res.json(all.map(publicUser));
@@ -568,11 +621,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       if (role !== undefined) patch.role = role;
       if (departmentId !== undefined) patch.departmentId = departmentId;
       if (password) {
-        // Pre-check duplicates (cheap path); the post-check below catches concurrent races.
-        const existing = await storage.users.findByPassword(password);
-        if (existing && existing.id !== id) {
-          return res.status(409).json({ error: 'Access code already in use' });
-        }
+        if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
         patch.passwordHash = hashPassword(password);
         // Invalidate every active session for this user. If the admin reset the code
         // because it leaked, any existing browser cookie must stop working immediately.
@@ -581,26 +630,8 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       }
 
       // Apply atomically with the last-admin invariant baked into the storage call.
-      // Without this the original read-then-write check was raceable: two parallel
-      // demote requests could both observe the other admin and both succeed.
       const ok = await storage.users.updateUnlessLastAdmin(id, patch);
       if (!ok) return res.status(400).json({ error: 'Cannot demote the last admin (or user not found)' });
-
-      // Post-check: if someone else committed the same access code in parallel,
-      // the pre-check above wouldn't have caught it. Detect now and roll back.
-      if (password) {
-        const after = await storage.users.findByPassword(password);
-        if (after && after.id !== id) {
-          // Roll back the password change. We don't have the old hash here, so
-          // revert by stripping the password from this account: bump sessionVersion
-          // again and set a random unguessable hash. The admin must re-issue a code.
-          await storage.users.update(id, {
-            passwordHash: hashPassword(randomBytes(32).toString('hex')),
-            sessionVersion: (patch.sessionVersion ?? 1) + 1,
-          });
-          return res.status(409).json({ error: 'Access code collision detected — assign a different code' });
-        }
-      }
 
       const all = await storage.users.list();
       res.json(all.map(publicUser));
@@ -627,3 +658,37 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
 function cryptoRandomId(): string {
   return randomBytes(8).toString('hex');
 }
+
+/* ─── Login rate limit (per id + IP, in-memory) ───────────── */
+
+interface LoginRl { failures: number; lockedUntil: number }
+const loginRl = new Map<string, LoginRl>();
+const LOGIN_DELAYS_S = [0, 0, 0, 5, 15, 60, 300, 900];
+
+function loginIsLocked(key: string): boolean {
+  const r = loginRl.get(key);
+  return !!r && r.lockedUntil > Date.now();
+}
+function recordLoginFailure(key: string) {
+  const r = loginRl.get(key) ?? { failures: 0, lockedUntil: 0 };
+  r.failures += 1;
+  const idx = Math.min(r.failures, LOGIN_DELAYS_S.length - 1);
+  const sec = LOGIN_DELAYS_S[idx];
+  r.lockedUntil = sec > 0 ? Date.now() + sec * 1000 : 0;
+  loginRl.set(key, r);
+  // Garbage-collect old entries occasionally so the map doesn't grow without bound.
+  if (loginRl.size > 1000) {
+    const now = Date.now();
+    for (const [k, v] of loginRl) {
+      if (v.lockedUntil === 0 || v.lockedUntil < now - 3_600_000) loginRl.delete(k);
+    }
+  }
+}
+function clearLoginFailures(key: string) { loginRl.delete(key); }
+
+/**
+ * Pre-computed hash of an unguessable string. Used as a target when the supplied
+ * id doesn't exist, so verifyPassword spends comparable time and the response
+ * latency doesn't leak which ids are in the user table.
+ */
+const DUMMY_HASH = hashPassword('::wak-dummy-password-do-not-use::');

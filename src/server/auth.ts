@@ -1,23 +1,32 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import type { PublicUser, UserRecord, UserRole } from './storage/types.js';
 
 /* ─── Password hashing (scrypt, no external deps) ─────────── */
 
 const SCRYPT_KEYLEN = 32;
+const scryptAsync = promisify(scrypt) as (
+  password: string, salt: string, keylen: number,
+) => Promise<Buffer>;
 
 export function hashPassword(password: string): string {
+  // Sync: only ever called from admin write paths (create/edit user), not the hot login path.
   const salt = randomBytes(16).toString('hex');
   const hash = scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
   return `scrypt$${salt}$${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+/**
+ * Async verify. Off-loads scrypt to libuv's worker pool so the main event loop
+ * stays responsive even under password-spray attempts.
+ */
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split('$');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
   const [, salt, hash] = parts;
   try {
     const hashBuf = Buffer.from(hash, 'hex');
-    const candidate = scryptSync(password, salt, hashBuf.length);
+    const candidate = await scryptAsync(password, salt, hashBuf.length);
     return hashBuf.length === candidate.length && timingSafeEqual(hashBuf, candidate);
   } catch {
     return false;

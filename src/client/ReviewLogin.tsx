@@ -11,10 +11,10 @@ export interface ReviewLoginProps {
   /** Accent color for the button. Default: "#305B91". */
   accentColor?: string;
   /**
-   * When present, shows a dev-only quick-select panel with the listed passwords.
+   * When present, shows a dev-only quick-select panel pre-filling id + password.
    * Only rendered when the bundler defines `import.meta.env.DEV`.
    */
-  devPasswords?: Array<{ name: string; password: string }>;
+  devPasswords?: Array<{ name: string; id: string; password: string }>;
 }
 
 export default function ReviewLogin({
@@ -26,6 +26,7 @@ export default function ReviewLogin({
   const { login, config } = useReview();
   const prefix = config.storageKeyPrefix;
 
+  const [id, setId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -41,9 +42,10 @@ export default function ReviewLogin({
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (lockSeconds > 0 || submitting) return;
+    if (!id.trim() || !password) return;
     setSubmitting(true);
     try {
-      const ok = await login(password);
+      const ok = await login(id, password);
       if (ok) {
         clearRl(prefix);
       } else {
@@ -81,13 +83,25 @@ export default function ReviewLogin({
 
         <form onSubmit={handleSubmit} className="wak-login-form">
           <input
+            type="text"
+            placeholder="User id"
+            value={id}
+            onChange={(e) => setId(e.target.value)}
+            disabled={lockSeconds > 0}
+            className="wak-login-input"
+            autoFocus
+            autoComplete="username"
+            spellCheck={false}
+            autoCapitalize="none"
+            style={{ marginBottom: 8 }}
+          />
+          <input
             type="password"
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={lockSeconds > 0}
             className="wak-login-input"
-            autoFocus
             autoComplete="current-password"
           />
 
@@ -110,7 +124,7 @@ export default function ReviewLogin({
                 <button
                   key={u.name}
                   type="button"
-                  onClick={() => setPassword(u.password)}
+                  onClick={() => { setId(u.id); setPassword(u.password); }}
                   className="wak-login-dev-btn"
                 >
                   {u.name}

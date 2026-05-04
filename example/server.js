@@ -21,12 +21,12 @@ const { seededUsers, seededDepartments } = await seedIfEmpty(storage, {
     { id: 'content',     name: 'Content',     color: '#F59E0B' },
   ],
   users: [
-    { id: 'alice',  name: 'Alice',  password: 'alice',  color: '#3B82F6', role: 'admin' },
-    { id: 'diana',  name: 'Diana',  password: 'diana',  color: '#EF4444', role: 'director' },
-    { id: 'leo',    name: 'Leo',    password: 'leo',    color: '#A855F7', role: 'lead', departmentId: 'design' },
-    { id: 'lena',   name: 'Lena',   password: 'lena',   color: '#10B981', role: 'lead', departmentId: 'linguistics' },
-    { id: 'rita',   name: 'Rita',   password: 'rita',   color: '#F59E0B', role: 'reviewer' },
-    { id: 'rob',    name: 'Rob',    password: 'rob',    color: '#06B6D4', role: 'reviewer' },
+    { id: 'alice',  name: 'Alice',  password: 'alice-pw-2026',  color: '#3B82F6', role: 'admin' },
+    { id: 'diana',  name: 'Diana',  password: 'diana-pw-2026',  color: '#EF4444', role: 'director' },
+    { id: 'leo',    name: 'Leo',    password: 'leo-pw-2026',    color: '#A855F7', role: 'lead', departmentId: 'design' },
+    { id: 'lena',   name: 'Lena',   password: 'lena-pw-2026',   color: '#10B981', role: 'lead', departmentId: 'linguistics' },
+    { id: 'rita',   name: 'Rita',   password: 'rita-pw-2026',   color: '#F59E0B', role: 'reviewer' },
+    { id: 'rob',    name: 'Rob',    password: 'rob-pw-2026',    color: '#06B6D4', role: 'reviewer' },
   ],
 });
 if (seededUsers || seededDepartments) {
@@ -38,13 +38,15 @@ app.use(
   createReviewRouter({
     storage,
     apiKey: 'demo-key-2026',
-    sessionSecret: 'dev-session-secret-change-me',
+    sessionSecret: 'dev-session-secret-change-me-please-32+chars',
+    routerMountPath: '/api',
     screenshotsDir: join(DATA_DIR, 'screenshots'),
     express,
   }),
 );
 
-app.use('/screenshots', express.static(join(DATA_DIR, 'screenshots')));
+// NOTE: there is no public static mount for screenshots anymore. Reads go
+// through GET /api/screenshots/:file which requires a valid session.
 
 app.listen(PORT, () => {
   console.log(`[example] API ready on http://localhost:${PORT}`);

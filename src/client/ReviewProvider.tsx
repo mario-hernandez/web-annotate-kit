@@ -20,7 +20,7 @@ interface ReviewContextType {
     resolvedOpacity: number;
     resolvedPinOpacity: number;
   };
-  login: (password: string) => Promise<boolean>;
+  login: (id: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   addComment: (partial: Omit<ReviewComment, 'id' | 'author' | 'authorColor' | 'createdAt' | 'status' | 'resolved' | 'notes'> & { department?: string }) => Promise<void>;
   updateComment: (id: string, text: string) => Promise<void>;
@@ -275,13 +275,13 @@ export function ReviewProvider({
 
   /* ── Auth ──────────────────────────────────────────────── */
 
-  const login = useCallback(async (password: string): Promise<boolean> => {
+  const login = useCallback(async (id: string, password: string): Promise<boolean> => {
     try {
       const res = await fetch(`${apiBase}/auth/login`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ password: password.trim() }),
+        body: JSON.stringify({ id: id.trim(), password: password.trim() }),
       });
       if (!res.ok) return false;
       const { user } = await res.json();

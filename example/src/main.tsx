@@ -26,12 +26,12 @@ function AuthedApp() {
         subtitle="web-annotate-kit"
         accentColor="#305B91"
         devPasswords={[
-          { name: 'Alice (admin)',          password: 'alice' },
-          { name: 'Diana (director)',       password: 'diana' },
-          { name: 'Leo (lead · design)',    password: 'leo' },
-          { name: 'Lena (lead · ling.)',    password: 'lena' },
-          { name: 'Rita (reviewer)',        password: 'rita' },
-          { name: 'Rob (reviewer)',         password: 'rob' },
+          { name: 'Alice (admin)',          id: 'alice', password: 'alice-pw-2026' },
+          { name: 'Diana (director)',       id: 'diana', password: 'diana-pw-2026' },
+          { name: 'Leo (lead · design)',    id: 'leo',   password: 'leo-pw-2026' },
+          { name: 'Lena (lead · ling.)',    id: 'lena',  password: 'lena-pw-2026' },
+          { name: 'Rita (reviewer)',        id: 'rita',  password: 'rita-pw-2026' },
+          { name: 'Rob (reviewer)',         id: 'rob',   password: 'rob-pw-2026' },
         ]}
       />
     );

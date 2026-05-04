@@ -79,8 +79,9 @@ export function memoryStorage(): {
   const usersApi: UserStorage = {
     async list() { return [...users.values()].sort((a, b) => a.name.localeCompare(b.name)); },
     async findByPassword(password) {
+      // Kept for back-compat with v0.3.x; no longer used by login since 0.3.4.
       for (const u of users.values()) {
-        if (verifyPassword(password, u.passwordHash)) return u;
+        if (await verifyPassword(password, u.passwordHash)) return u;
       }
       return null;
     },

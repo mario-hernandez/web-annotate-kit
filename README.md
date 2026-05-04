@@ -95,11 +95,15 @@ app.use('/api', createReviewRouter({
   storage,
   apiKey: process.env.REVIEW_API_KEY,
   sessionSecret: process.env.REVIEW_SESSION_SECRET, // mandatory; ≥16 chars; must NOT equal apiKey
+  routerMountPath: '/api',                          // path you mounted at; defaults to '/api'
   screenshotsDir: './screenshots',
   express,
 }));
 
-app.use('/screenshots', express.static('./screenshots'));
+// Screenshot reads go through the AUTHENTICATED router endpoint
+// (/api/screenshots/:file). Do NOT add a public `app.use('/screenshots', ...)`
+// static mount — that would bypass authentication.
+
 app.listen(3001);
 ```
 
