@@ -1,16 +1,15 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, useLocation, useNavigate, Link } from 'react-router-dom';
+import { BrowserRouter, useLocation, Link } from 'react-router-dom';
 import {
   ReviewProvider,
   ReviewOverlay,
   ReviewDashboard,
+  ReviewAdmin,
   ReviewLogin,
   useReview,
 } from 'web-annotate-kit/client';
 import App from './App';
-
-/* Hooked-in components that plug react-router into the kit. */
 
 function WiredLink({ to, className, title, onClick, children }: { to: string; className?: string; title?: string; onClick?: () => void; children: React.ReactNode }) {
   return <Link to={to} className={className} title={title} onClick={onClick}>{children}</Link>;
@@ -27,21 +26,30 @@ function AuthedApp() {
         subtitle="web-annotate-kit"
         accentColor="#305B91"
         devPasswords={[
-          { name: 'Alice (admin)', password: 'alice' },
-          { name: 'Bob', password: 'bob' },
+          { name: 'Alice (admin)',          password: 'alice' },
+          { name: 'Diana (director)',       password: 'diana' },
+          { name: 'Leo (lead · design)',    password: 'leo' },
+          { name: 'Lena (lead · ling.)',    password: 'lena' },
+          { name: 'Rita (reviewer)',        password: 'rita' },
+          { name: 'Rob (reviewer)',         password: 'rob' },
         ]}
       />
+    );
+  }
+
+  if (location.pathname === '/review/admin') {
+    return (
+      <>
+        <ReviewOverlay currentPath={location.pathname} LinkComponent={WiredLink} dashboardPath="/review" adminPath="/review/admin" />
+        <ReviewAdmin LinkComponent={WiredLink} homePath="/" title="Demo admin" />
+      </>
     );
   }
 
   if (location.pathname === '/review') {
     return (
       <>
-        <ReviewOverlay
-          currentPath={location.pathname}
-          LinkComponent={WiredLink}
-          dashboardPath="/review"
-        />
+        <ReviewOverlay currentPath={location.pathname} LinkComponent={WiredLink} dashboardPath="/review" adminPath="/review/admin" />
         <ReviewDashboard LinkComponent={WiredLink} homePath="/" title="Demo review" />
       </>
     );
@@ -49,11 +57,7 @@ function AuthedApp() {
 
   return (
     <>
-      <ReviewOverlay
-        currentPath={location.pathname}
-        LinkComponent={WiredLink}
-        dashboardPath="/review"
-      />
+      <ReviewOverlay currentPath={location.pathname} LinkComponent={WiredLink} dashboardPath="/review" adminPath="/review/admin" />
       <App />
     </>
   );
@@ -62,15 +66,7 @@ function AuthedApp() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <ReviewProvider
-        apiBase="/api"
-        apiKey="demo-key-2026"
-        captureScreenshots={true}
-        users={[
-          { id: 'alice',  name: 'Alice', password: 'alice', color: '#3B82F6', role: 'admin' },
-          { id: 'bob',    name: 'Bob',   password: 'bob',   color: '#10B981', role: 'reviewer' },
-        ]}
-      >
+      <ReviewProvider apiBase="/api" apiKey="demo-key-2026" captureScreenshots={true}>
         <AuthedApp />
       </ReviewProvider>
     </BrowserRouter>

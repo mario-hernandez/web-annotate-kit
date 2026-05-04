@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { clearRl, getLockSeconds, recordFailure, useReview } from './ReviewProvider';
 
+/* `remember me` no longer applies — the server-issued session cookie now controls session lifetime. */
+
 export interface ReviewLoginProps {
   /** Brand name shown in the hero. Default: "Review". */
   brand?: string;
@@ -25,8 +27,8 @@ export default function ReviewLogin({
   const prefix = config.storageKeyPrefix;
 
   const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [shake, setShake] = useState(false);
   const [lockSeconds, setLockSeconds] = useState(() => getLockSeconds(prefix));
 
@@ -36,23 +38,28 @@ export default function ReviewLogin({
     return () => clearInterval(t);
   }, [lockSeconds, prefix]);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (lockSeconds > 0) return;
-
-    if (login(password, remember)) {
-      clearRl(prefix);
-    } else {
-      const delay = recordFailure(prefix);
-      setShake(true);
-      setTimeout(() => setShake(false), 500);
-      if (delay > 0) {
-        setLockSeconds(delay);
-        setError(`Too many attempts. Wait ${delay}s.`);
+    if (lockSeconds > 0 || submitting) return;
+    setSubmitting(true);
+    try {
+      const ok = await login(password);
+      if (ok) {
+        clearRl(prefix);
       } else {
-        setError('Wrong password');
-        setTimeout(() => setError(''), 3000);
+        const delay = recordFailure(prefix);
+        setShake(true);
+        setTimeout(() => setShake(false), 500);
+        if (delay > 0) {
+          setLockSeconds(delay);
+          setError(`Too many attempts. Wait ${delay}s.`);
+        } else {
+          setError('Wrong password');
+          setTimeout(() => setError(''), 3000);
+        }
       }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -84,24 +91,13 @@ export default function ReviewLogin({
             autoComplete="current-password"
           />
 
-          <label className="wak-login-remember">
-            <input
-              type="checkbox"
-              checked={remember}
-              onChange={(e) => setRemember(e.target.checked)}
-              className="wak-login-check"
-              style={{ accentColor }}
-            />
-            <span>Remember me</span>
-          </label>
-
           <button
             type="submit"
-            disabled={lockSeconds > 0}
+            disabled={lockSeconds > 0 || submitting}
             className="wak-login-submit"
-            style={{ backgroundColor: accentColor }}
+            style={{ backgroundColor: accentColor, marginTop: 16 }}
           >
-            {lockSeconds > 0 ? `Wait ${lockSeconds}s` : 'Enter'}
+            {lockSeconds > 0 ? `Wait ${lockSeconds}s` : submitting ? '…' : 'Enter'}
           </button>
           {error && <p className="wak-login-error">{error}</p>}
         </form>

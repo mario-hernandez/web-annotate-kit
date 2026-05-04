@@ -6,6 +6,13 @@ export { default as ReviewDashboard } from './ReviewDashboard';
 export type { ReviewDashboardProps } from './ReviewDashboard';
 export { default as ReviewLogin } from './ReviewLogin';
 export type { ReviewLoginProps } from './ReviewLogin';
+export { default as ReviewAdmin } from './ReviewAdmin';
+export type { ReviewAdminProps } from './ReviewAdmin';
 export { useReviewTour, resetTour } from './ReviewTour';
 export type { UseReviewTourOptions } from './ReviewTour';
-export type { ReviewComment, ReviewUser, ReviewUserDef } from './types';
+export { canActOnComment } from './permissions';
+export type { ClientReviewAction } from './permissions';
+export type {
+  ReviewComment, ReviewNote, ReviewUser, ReviewUserDef,
+  ReviewDepartment, ReviewRole, ReviewStatus,
+} from './types';
