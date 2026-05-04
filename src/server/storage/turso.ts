@@ -272,6 +272,45 @@ export async function tursoStorage(options: TursoOptions): Promise<{
       const r = await db.execute('SELECT COUNT(*) AS c FROM wak_users');
       return Number(r.rows[0]?.c ?? 0);
     },
+    async updateUnlessLastAdmin(id, patch) {
+      const map: Record<string, string> = {
+        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role',
+        departmentId: 'department_id', sessionVersion: 'session_version',
+      };
+      const fields: string[] = [];
+      const args: unknown[] = [];
+      for (const k of Object.keys(patch) as Array<keyof typeof patch>) {
+        const col = map[k as string];
+        if (!col) continue;
+        fields.push(`${col} = ?`);
+        args.push(patch[k] ?? null);
+      }
+      if (!fields.length) return true;
+      const wantedRole = patch.role ?? null;
+
+      // Single-statement guard: the UPDATE only fires when either:
+      //   (a) we are not changing the role away from 'admin', or
+      //   (b) the role isn't currently 'admin', or
+      //   (c) at least one OTHER admin still exists.
+      // Without a read-then-write window, two concurrent demote requests can't
+      // both pass the check.
+      const sql = `UPDATE wak_users SET ${fields.join(', ')} WHERE id = ? AND (
+        ? IS NULL
+        OR ? = 'admin'
+        OR role != 'admin'
+        OR (SELECT COUNT(*) FROM wak_users WHERE role = 'admin' AND id != ?) > 0
+      )`;
+      const r = await db.execute({ sql, args: [...args, id, wantedRole, wantedRole, id] }) as unknown as { rowsAffected?: number };
+      return (r.rowsAffected ?? 0) > 0;
+    },
+    async deleteUnlessLastAdmin(id) {
+      const sql = `DELETE FROM wak_users WHERE id = ? AND (
+        role != 'admin'
+        OR (SELECT COUNT(*) FROM wak_users WHERE role = 'admin' AND id != ?) > 0
+      )`;
+      const r = await db.execute({ sql, args: [id, id] }) as unknown as { rowsAffected?: number };
+      return (r.rowsAffected ?? 0) > 0;
+    },
   };
 
   const departments: DepartmentStorage = {

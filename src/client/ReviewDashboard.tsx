@@ -208,6 +208,7 @@ export default function ReviewDashboard({
             const canDelete = canActOnComment(user, 'delete', c);
             const canAccept = canActOnComment(user, 'accept', c);
             const canResolve = canActOnComment(user, 'resolve', c);
+            const canReopen = canActOnComment(user, 'reopen', c);
             const dimmed = c.status === 'resolved';
             const itemClass =
               c.status === 'resolved' ? 'wak-resolved'
@@ -240,9 +241,10 @@ export default function ReviewDashboard({
                   <div className="wak-dash-item-actions">
                     {canAccept && <button onClick={() => acceptComment(c.id)} className="wak-btn-pill-sm wak-btn-accept">Accept ↑</button>}
                     {canResolve && (
-                      <button onClick={() => resolveComment(c.id)} className={`wak-btn-pill-sm ${c.status === 'resolved' ? 'wak-done' : ''}`}>
-                        {c.status === 'resolved' ? '✓ Resolved' : 'Resolve'}
-                      </button>
+                      <button onClick={() => resolveComment(c.id)} className="wak-btn-pill-sm">Resolve</button>
+                    )}
+                    {canReopen && (
+                      <button onClick={() => resolveComment(c.id)} className="wak-btn-pill-sm wak-btn-reopen">Reopen</button>
                     )}
                     {canDelete && <button onClick={() => deleteComment(c.id)} className="wak-btn-pill-sm wak-btn-danger">Delete</button>}
                   </div>
@@ -354,6 +356,8 @@ function DashboardStyles({ accentColor, resolvedOpacity }: { accentColor: string
       .wak-btn-pill-sm.wak-done { background: #d1fae5; color: #065f46; }
       .wak-btn-pill-sm.wak-btn-accept { background: #fef3c7; color: #92400e; }
       .wak-btn-pill-sm.wak-btn-accept:hover { background: #fde68a; color: #78350f; }
+      .wak-btn-pill-sm.wak-btn-reopen { background: #e0e7ff; color: #3730a3; }
+      .wak-btn-pill-sm.wak-btn-reopen:hover { background: #c7d2fe; color: #312e81; }
       .wak-btn-pill-sm.wak-btn-danger { background: transparent; color: #fca5a5; }
       .wak-btn-pill-sm.wak-btn-danger:hover { background: #fef2f2; color: #dc2626; }
       .wak-dash-item-body { display: flex; gap: 16px; margin-top: 12px; }

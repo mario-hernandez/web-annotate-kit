@@ -126,6 +126,7 @@ function Pin({
   const canDelete = canActOnComment(user, 'delete', comment);
   const canAccept = canActOnComment(user, 'accept', comment);
   const canResolve = canActOnComment(user, 'resolve', comment);
+  const canReopen = canActOnComment(user, 'reopen', comment);
   // anyone authenticated can add a note
 
   const statusLabel = comment.status === 'accepted' ? 'Accepted ↑'
@@ -224,9 +225,10 @@ function Pin({
               <button onClick={onAccept} className="wak-btn-text wak-btn-accept">Accept ↑</button>
             )}
             {canResolve && (
-              <button onClick={onResolve} className={`wak-btn-text ${comment.status === 'resolved' ? 'wak-btn-resolved' : ''}`}>
-                {comment.status === 'resolved' ? '✓ Resolved' : 'Resolve'}
-              </button>
+              <button onClick={onResolve} className="wak-btn-text">Resolve</button>
+            )}
+            {canReopen && (
+              <button onClick={onResolve} className="wak-btn-text wak-btn-reopen">Reopen</button>
             )}
             {canEdit && <button onClick={onEdit} className="wak-btn-text">Edit</button>}
             {canDelete && <button onClick={onDelete} className="wak-btn-text wak-btn-danger">Delete</button>}
@@ -660,6 +662,8 @@ function OverlayStyles({ accentColor, resolvedOpacity }: { accentColor: string; 
       .wak-btn-resolved { color: #059669 !important; }
       .wak-btn-accept { color: #92400e !important; }
       .wak-btn-accept:hover { color: #b45309 !important; }
+      .wak-btn-reopen { color: #3730a3 !important; }
+      .wak-btn-reopen:hover { color: #312e81 !important; }
       .wak-btn-danger { color: #fca5a5 !important; }
       .wak-btn-danger:hover { color: #dc2626 !important; }
 

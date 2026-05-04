@@ -261,7 +261,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
   /* Reviews                                                 */
   /* ─────────────────────────────────────────────────────── */
 
-  router.get('/reviews', async (_req, res) => {
+  router.get('/reviews', requireSession, async (_req, res) => {
     try {
       const all = await storage.reviews.list();
       res.json(all);
@@ -459,7 +459,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     }
   });
 
-  router.get('/screenshots/:file', async (req, res) => {
+  router.get('/screenshots/:file', requireSession, async (req, res) => {
     const filename = basename(req.params.file);
     if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) return res.status(400).end();
     const filepath = join(screenshotsDir, filename);
@@ -483,7 +483,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
   /* Departments (read public, write admin-only)             */
   /* ─────────────────────────────────────────────────────── */
 
-  router.get('/departments', async (_req, res) => {
+  router.get('/departments', requireSession, async (_req, res) => {
     try {
       res.json(await storage.departments.list());
     } catch (e) {
@@ -531,8 +531,7 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         role?: UserRecord['role']; departmentId?: string | null;
       };
       if (!id || !name || !password || !role) return res.status(400).json({ error: 'id, name, password, role are required' });
-      // Reject duplicate access codes — login is keyed by password, so two users
-      // sharing one would let one of them silently impersonate the other.
+      // Pre-check (cheap path); the post-check after insert catches concurrent races.
       const existing = await storage.users.findByPassword(password);
       if (existing) return res.status(409).json({ error: 'Access code already in use' });
       await storage.users.insert({
@@ -541,6 +540,13 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         sessionVersion: 1,
         createdAt: new Date().toISOString(),
       });
+      // Post-check: if a concurrent request committed the same code, undo our insert.
+      // This closes the read-then-write race the adversarial review flagged.
+      const after = await storage.users.findByPassword(password);
+      if (after && after.id !== id) {
+        await storage.users.delete(id);
+        return res.status(409).json({ error: 'Access code collision detected — assign a different code' });
+      }
       const all = await storage.users.list();
       res.json(all.map(publicUser));
     } catch (e) {
@@ -556,27 +562,13 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         role?: UserRecord['role']; departmentId?: string | null;
       };
 
-      // Last-admin guard: reject any role change that would leave the org with zero admins.
-      // Self-demotion of the only admin would otherwise lock everyone out of the admin panel,
-      // and `seedIfEmpty` only re-seeds when the table is empty (= manual DB repair incident).
-      if (role !== undefined && role !== 'admin') {
-        const all = await storage.users.list();
-        const target = all.find((u) => u.id === id);
-        if (target?.role === 'admin') {
-          const remainingAdmins = all.filter((u) => u.role === 'admin' && u.id !== id).length;
-          if (remainingAdmins === 0) {
-            return res.status(400).json({ error: 'Cannot demote the last admin' });
-          }
-        }
-      }
-
       const patch: Partial<Omit<UserRecord, 'id' | 'createdAt'>> = {};
       if (name !== undefined) patch.name = name;
       if (color !== undefined) patch.color = color;
       if (role !== undefined) patch.role = role;
       if (departmentId !== undefined) patch.departmentId = departmentId;
       if (password) {
-        // Reject duplicate access codes (excluding the user being edited).
+        // Pre-check duplicates (cheap path); the post-check below catches concurrent races.
         const existing = await storage.users.findByPassword(password);
         if (existing && existing.id !== id) {
           return res.status(409).json({ error: 'Access code already in use' });
@@ -587,7 +579,29 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
         const current = await storage.users.findById(id);
         patch.sessionVersion = (current?.sessionVersion ?? 1) + 1;
       }
-      await storage.users.update(id, patch);
+
+      // Apply atomically with the last-admin invariant baked into the storage call.
+      // Without this the original read-then-write check was raceable: two parallel
+      // demote requests could both observe the other admin and both succeed.
+      const ok = await storage.users.updateUnlessLastAdmin(id, patch);
+      if (!ok) return res.status(400).json({ error: 'Cannot demote the last admin (or user not found)' });
+
+      // Post-check: if someone else committed the same access code in parallel,
+      // the pre-check above wouldn't have caught it. Detect now and roll back.
+      if (password) {
+        const after = await storage.users.findByPassword(password);
+        if (after && after.id !== id) {
+          // Roll back the password change. We don't have the old hash here, so
+          // revert by stripping the password from this account: bump sessionVersion
+          // again and set a random unguessable hash. The admin must re-issue a code.
+          await storage.users.update(id, {
+            passwordHash: hashPassword(randomBytes(32).toString('hex')),
+            sessionVersion: (patch.sessionVersion ?? 1) + 1,
+          });
+          return res.status(409).json({ error: 'Access code collision detected — assign a different code' });
+        }
+      }
+
       const all = await storage.users.list();
       res.json(all.map(publicUser));
     } catch (e) {
@@ -598,14 +612,8 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
   router.delete('/users/:id', requireSession, requireAdmin, async (req, res) => {
     try {
       const id = String(req.params.id);
-      // safety net: don't let the last admin delete themselves into oblivion
-      const all = await storage.users.list();
-      const target = all.find((u) => u.id === id);
-      if (target?.role === 'admin') {
-        const adminCount = all.filter((u) => u.role === 'admin').length;
-        if (adminCount <= 1) return res.status(400).json({ error: 'Cannot delete the last admin' });
-      }
-      await storage.users.delete(id);
+      const ok = await storage.users.deleteUnlessLastAdmin(id);
+      if (!ok) return res.status(400).json({ error: 'Cannot delete the last admin (or user not found)' });
       const next = await storage.users.list();
       res.json(next.map(publicUser));
     } catch (e) {

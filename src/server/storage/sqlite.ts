@@ -314,6 +314,52 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
       const row = db.prepare('SELECT COUNT(*) AS c FROM wak_users').get() as { c: number };
       return Number(row.c);
     },
+    async updateUnlessLastAdmin(id, patch) {
+      // better-sqlite3 serializes writers; BEGIN IMMEDIATE acquires a write lock
+      // up-front so the COUNT and UPDATE see the same snapshot. No race window.
+      const map: Record<string, string> = {
+        name: 'name', passwordHash: 'password_hash', color: 'color', role: 'role',
+        departmentId: 'department_id', sessionVersion: 'session_version',
+      };
+      const fields: string[] = [];
+      const args: unknown[] = [];
+      for (const k of Object.keys(patch) as Array<keyof typeof patch>) {
+        const col = map[k as string];
+        if (!col) continue;
+        fields.push(`${col} = ?`);
+        args.push(patch[k] ?? null);
+      }
+      if (!fields.length) return true; // nothing to do
+      args.push(id);
+
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const target = db.prepare('SELECT role FROM wak_users WHERE id = ?').get(id) as { role: string } | undefined;
+        if (!target) { db.exec('ROLLBACK'); return false; }
+        const wantedRole = (patch.role ?? target.role) as string;
+        if (target.role === 'admin' && wantedRole !== 'admin') {
+          const others = db.prepare("SELECT COUNT(*) AS c FROM wak_users WHERE role = 'admin' AND id != ?").get(id) as { c: number };
+          if (Number(others.c) === 0) { db.exec('ROLLBACK'); return false; }
+        }
+        db.prepare(`UPDATE wak_users SET ${fields.join(', ')} WHERE id = ?`).run(...args);
+        db.exec('COMMIT');
+        return true;
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
+    async deleteUnlessLastAdmin(id) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const target = db.prepare('SELECT role FROM wak_users WHERE id = ?').get(id) as { role: string } | undefined;
+        if (!target) { db.exec('ROLLBACK'); return false; }
+        if (target.role === 'admin') {
+          const others = db.prepare("SELECT COUNT(*) AS c FROM wak_users WHERE role = 'admin' AND id != ?").get(id) as { c: number };
+          if (Number(others.c) === 0) { db.exec('ROLLBACK'); return false; }
+        }
+        db.prepare('DELETE FROM wak_users WHERE id = ?').run(id);
+        db.exec('COMMIT');
+        return true;
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
   };
 
   /* ── Departments ──────────────────────────────────────── */

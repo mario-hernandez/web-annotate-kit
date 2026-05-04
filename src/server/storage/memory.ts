@@ -93,6 +93,27 @@ export function memoryStorage(): {
     },
     async delete(id) { users.delete(id); },
     async count() { return users.size; },
+    async updateUnlessLastAdmin(id, patch) {
+      const u = users.get(id);
+      if (!u) return false;
+      const wantedRole = patch.role ?? u.role;
+      if (u.role === 'admin' && wantedRole !== 'admin') {
+        const others = [...users.values()].filter((x) => x.id !== id && x.role === 'admin').length;
+        if (others === 0) return false;
+      }
+      users.set(id, { ...u, ...patch });
+      return true;
+    },
+    async deleteUnlessLastAdmin(id) {
+      const u = users.get(id);
+      if (!u) return false;
+      if (u.role === 'admin') {
+        const others = [...users.values()].filter((x) => x.id !== id && x.role === 'admin').length;
+        if (others === 0) return false;
+      }
+      users.delete(id);
+      return true;
+    },
   };
 
   const deptsApi: DepartmentStorage = {

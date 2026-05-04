@@ -82,6 +82,17 @@ export interface UserStorage {
   update(id: string, patch: Partial<Omit<UserRecord, 'id' | 'createdAt'>>): Promise<void>;
   delete(id: string): Promise<void>;
   count(): Promise<number>;
+  /**
+   * Atomic guarded patch. Applies the patch only if it would NOT leave the org
+   * with zero admins. Returns true when the patch was applied, false when it
+   * was rejected by the invariant. Implementations must enforce this in a
+   * single transactional statement (no read-then-write race window).
+   */
+  updateUnlessLastAdmin(id: string, patch: Partial<Omit<UserRecord, 'id' | 'createdAt'>>): Promise<boolean>;
+  /**
+   * Atomic guarded delete. Same semantics as updateUnlessLastAdmin but for delete.
+   */
+  deleteUnlessLastAdmin(id: string): Promise<boolean>;
 }
 
 /* ─── Departments ────────────────────────────────────────── */

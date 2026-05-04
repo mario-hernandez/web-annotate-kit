@@ -178,13 +178,12 @@ export function ReviewProvider({
 }: ReviewProviderProps) {
   const SK_COMMENTS = `${storageKeyPrefix}-comments`;
 
-  const load = <T,>(key: string, fallback: T): T => {
-    try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; }
-    catch { return fallback; }
-  };
-
+  // Note: we deliberately do NOT seed comments from localStorage at boot.
+  // /reviews now requires a session; rendering stale comments before fetchMe()
+  // resolves would leak them on shared/expired browsers. The first authenticated
+  // refresh repopulates state in milliseconds.
   const [user, setUser] = useState<ReviewUser | null>(null);
-  const [comments, setComments] = useState<ReviewComment[]>(() => load(SK_COMMENTS, [] as ReviewComment[]));
+  const [comments, setComments] = useState<ReviewComment[]>([]);
   const [departments, setDepartments] = useState<ReviewDepartment[]>([]);
   const [users, setUsers] = useState<ReviewUser[] | null>(null);
   const syncRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -240,24 +239,39 @@ export function ReviewProvider({
   const fetchMe = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/auth/me`, { credentials: 'same-origin' });
-      if (!res.ok) { setUser(null); return; }
+      if (!res.ok) {
+        // No (or revoked) session: drop any locally-cached comments so a shared
+        // browser can't reveal them after the cookie was invalidated server-side.
+        setUser(null);
+        setComments([]);
+        try { localStorage.removeItem(SK_COMMENTS); } catch { /* ignore */ }
+        return;
+      }
       const { user } = await res.json();
       setUser(user as ReviewUser);
     } catch { setUser(null); }
-  }, [apiBase]);
+  }, [apiBase, SK_COMMENTS]);
 
-  /* ── Boot: load auth + departments + comments ─────────── */
+  /* ── Boot: load auth first; gate everything else on a valid session ───────── */
 
+  useEffect(() => { fetchMe(); }, [fetchMe]);
+
+  // Sync comments + departments only while authenticated. The /reviews and
+  // /departments endpoints require a session, so calling them logged-out is
+  // both wasteful and surfaces 401s; gate them at the source.
   useEffect(() => {
-    fetchMe();
+    if (!user) {
+      // stop polling and discard cache when there's no session
+      if (syncRef.current) { clearInterval(syncRef.current); syncRef.current = null; }
+      return;
+    }
     refreshDepartments();
     refresh();
-  }, [fetchMe, refreshDepartments, refresh]);
-
-  useEffect(() => {
     syncRef.current = setInterval(refresh, pollIntervalMs);
-    return () => { if (syncRef.current) clearInterval(syncRef.current); };
-  }, [refresh, pollIntervalMs]);
+    return () => {
+      if (syncRef.current) { clearInterval(syncRef.current); syncRef.current = null; }
+    };
+  }, [user, refresh, refreshDepartments, pollIntervalMs]);
 
   /* ── Auth ──────────────────────────────────────────────── */
 
@@ -280,10 +294,15 @@ export function ReviewProvider({
     try {
       await fetch(`${apiBase}/auth/logout`, { method: 'POST', credentials: 'same-origin' });
     } finally {
+      // Wipe in-memory + persisted state. Without this, a shared browser would
+      // still expose the cached comments via localStorage to the next visitor.
       setUser(null);
       setUsers(null);
+      setComments([]);
+      setDepartments([]);
+      try { localStorage.removeItem(SK_COMMENTS); } catch { /* ignore */ }
     }
-  }, [apiBase]);
+  }, [apiBase, SK_COMMENTS]);
 
   /* ── CRUD ──────────────────────────────────────────────── */
 

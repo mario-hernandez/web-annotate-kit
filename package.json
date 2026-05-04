@@ -1,6 +1,6 @@
 {
   "name": "web-annotate-kit",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Pin-anchored visual review and comments for any live website. React client + Express server + pluggable storage (SQLite, Turso).",
   "type": "module",
   "author": {
