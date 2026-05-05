@@ -12,7 +12,7 @@
 
 Most websites are reviewed by people who aren't developers — directors, content writers, brand managers, agency clients. Today they send feedback via email, WhatsApp or PDFs with red arrows. The developer then copies that into tickets, tries to figure out which paragraph they meant, iterates, and sends a new screenshot back for approval. Friction at every step, context lost every time.
 
-**web-annotate-kit replaces that loop with a single place.** Anyone on the team with a password opens your site — staging or production — clicks the **+** button at the bottom-right, and drops a colored pin anywhere: literally on the headline that should change, on the image that's too big, on the button with the wrong copy. They write a short note. It's saved instantly. Everyone else sees it when they log in.
+**web-annotate-kit replaces that loop with a single place.** Anyone on the team logs in with their **id + password**, opens your site — staging or production — clicks the **+** button at the bottom-right, and drops a colored pin anywhere: literally on the headline that should change, on the image that's too big, on the button with the wrong copy. They write a short note, optionally pick a target **department** so the right lead reviews it, and it's saved instantly.
 
 ## What each pin actually captures
 
@@ -20,7 +20,8 @@ Every comment is anchored to **percent-x + page-y** (so it survives responsive r
 
 - An **automatic PNG screenshot** of what the reviewer was seeing at the moment of the click, with a red marker drawn at the pin location.
 - The **DOM context**: nearest `<section>` heading, the enclosing tag name, up to 120 characters of surrounding text, and a short CSS selector path.
-- **Author, color, timestamp, status** (open / resolved), and optional edit history.
+- **Author, color, timestamp, lifecycle status** (`open` → `accepted` → `resolved`), and optional edit history.
+- **Notes / addenda**: any authenticated reviewer can append a note to any pin (even one they don't own) to enrich the original observation without overwriting it.
 
 A companion **dashboard** aggregates every pin across every URL of your site, filterable by reviewer, page or status. One click exports to `.txt` (ready to paste into an LLM — "turn these into a punchlist") or `.json` for tooling.
 
@@ -42,10 +43,13 @@ It fits any React app with an Express backend. Pluggable storage means you can r
 - **Pin comments** anchored by percent-x + pixel-y so they stick even as the layout shifts.
 - **Automatic screenshots** via the Screen Capture API — the reviewer clicks **Allow**, a red marker is drawn on the capture, done.
 - **DOM context** captured with each comment: nearest `<section>` heading, enclosing tag, truncated text nearby, CSS selector path.
-- **Dashboard view** aggregating every pin across every URL, filterable by author, page, status.
+- **Roles + departments**: `reviewer` / `lead` / `director` / `admin`, with `open → accepted → resolved` escalation flow per comment.
+- **In-app admin panel** to manage users and departments without redeploying.
+- **Notes (addenda)**: any reviewer can enrich any pin with extra notes.
+- **Dashboard view** aggregating every pin across every URL, role-aware (lead → my dept inbox; director → escalation inbox).
 - **Export** to `.txt` (prompt-ready for LLM handoff) or `.json`.
 - **Pluggable storage**: SQLite (zero-setup), Turso (hosted), or write your own adapter.
-- **Rate-limited login** with exponential backoff stored in `localStorage`.
+- **Real auth**: scrypt-hashed passwords, HMAC-signed HttpOnly session cookies, server-side rate-limited login.
 - **Framework-agnostic routing**: default tracks `window.location.pathname`; pass your router's pathname for perfect integration.
 
 ---
@@ -84,10 +88,11 @@ await seedIfEmpty(storage, {
     { id: 'linguistics', name: 'Linguistics', color: '#10B981' },
   ],
   users: [
-    { id: 'alice',  name: 'Alice', password: 'alice-pass', color: '#3B82F6', role: 'admin' },
-    { id: 'diana',  name: 'Diana', password: 'diana-pass', color: '#EF4444', role: 'director' },
-    { id: 'leo',    name: 'Leo',   password: 'leo-pass',   color: '#A855F7', role: 'lead', departmentId: 'design' },
-    { id: 'rita',   name: 'Rita',  password: 'rita-pass',  color: '#F59E0B', role: 'reviewer' },
+    // Passwords must be ≥8 chars. Treat them as access codes you assign and rotate.
+    { id: 'alice',  name: 'Alice', password: 'alice-pass-2026', color: '#3B82F6', role: 'admin' },
+    { id: 'diana',  name: 'Diana', password: 'diana-pass-2026', color: '#EF4444', role: 'director' },
+    { id: 'leo',    name: 'Leo',   password: 'leo-pass-2026',   color: '#A855F7', role: 'lead', departmentId: 'design' },
+    { id: 'rita',   name: 'Rita',  password: 'rita-pass-2026',  color: '#F59E0B', role: 'reviewer' },
   ],
 });
 
@@ -128,7 +133,7 @@ function Gate({ children }) {
 </ReviewProvider>
 ```
 
-That's it. Users log in with their password (the server validates against the seeded/managed list and issues a signed HttpOnly session cookie). Click the **+** button at the bottom right to drop a pin.
+That's it. Users log in with their **id + password**; the server validates against the seeded/managed list and issues a signed HttpOnly session cookie. Click the **+** button at the bottom right to drop a pin.
 
 ---
 
@@ -207,16 +212,40 @@ const storage = memoryStorage();
 
 ### Custom
 
-Implement the interface from `web-annotate-kit/server`:
+A custom adapter must expose three storages: `reviews`, `users`, `departments`. The full interface lives in `web-annotate-kit/server` (`ReviewStorage`, `UserStorage`, `DepartmentStorage`). Highlights:
 
 ```ts
 interface ReviewStorage {
   list(): Promise<ReviewRecord[]>;
   insert(record: ReviewRecord): Promise<void>;
   updateText(id: string, text: string, updatedAt: string): Promise<void>;
-  updateScreenshot(id: string, screenshotUrl: string): Promise<void>;
-  toggleResolved(id: string): Promise<void>;
-  delete(id: string): Promise<string | null>; // returns screenshot URL to clean up
+  updateScreenshot(id: string, screenshotUrl: string | null): Promise<void>;
+  setStatus(id: string, status: 'open' | 'accepted' | 'resolved',
+            opts?: { acceptedBy?: string; acceptedById?: string; acceptedAt?: string }): Promise<void>;
+  toggleResolved(id: string): Promise<void>;       // legacy back-compat
+  addNote(id: string, note: ReviewNoteRecord): Promise<void>;  // must be atomic
+  delete(id: string): Promise<string | null>;      // returns screenshot URL for cleanup
+  setAuthorId?(id: string, authorId: string): Promise<void>;   // optional, used by boot migration
+}
+
+interface UserStorage {
+  list(): Promise<UserRecord[]>;
+  findById(id: string): Promise<UserRecord | null>;
+  insert(record: UserRecord): Promise<void>;
+  insertIfNotExists(record: UserRecord): Promise<boolean>;
+  update(id: string, patch: Partial<UserRecord>): Promise<void>;
+  updateUnlessLastAdmin(id: string, patch: Partial<UserRecord>): Promise<boolean>;
+  deleteUnlessLastAdmin(id: string): Promise<boolean>;
+  delete(id: string): Promise<void>;
+  count(): Promise<number>;
+  // findByPassword(password): kept for back-compat; not on the hot path since 0.3.4.
+}
+
+interface DepartmentStorage {
+  list(): Promise<DepartmentRecord[]>;
+  upsert(record: DepartmentRecord): Promise<void>;
+  delete(id: string): Promise<void>;
+  count(): Promise<number>;
 }
 ```
 
@@ -320,15 +349,29 @@ Accepts `LinkComponent`, `homePath`, `accentColor`, `title`. Renders an "Admin o
 
 ### `useReview()` returns
 
-`user`, `comments`, `departments`, `users` (admin-only, lazy via `refreshUsers()`), `login(password)`, `logout()`, `addComment`, `updateComment`, `deleteComment`, `resolveComment`, **`acceptComment`** (lead/director/admin), **`addNote(id, text)`** (any authenticated user), `exportComments`, `exportCompact`.
+`user`, `comments`, `departments`, `users` (admin-only, lazy via `refreshUsers()`), `login(id, password)`, `logout()`, `addComment`, `updateComment`, `deleteComment`, `resolveComment` (toggles between `accepted → resolved` and `resolved → open`), **`acceptComment`** (lead/director/admin), **`addNote(id, text)`** (any authenticated user), `refreshUsers`, `refreshDepartments`, **`authedFetch(input, init?)`** (use it for any custom request the kit doesn't expose; on 401/403 it auto-clears client state), `exportComments`, `exportCompact`.
 
 ### `createReviewRouter(options)`
 
-`storage` (object: `{ reviews, users, departments }`), `apiKey`, `sessionSecret`, `sessionTtlDays`, `cookieName`, `cookieSecure`, `screenshotsDir`, `express`, optional `jsonLimit`, `mirror`, `onInsert`.
+| Option | Default | Notes |
+|---|---|---|
+| `storage` | required | `{ reviews, users, departments }` |
+| `apiKey` | required | Public-ish gate to the login form (ships in client bundle). |
+| `sessionSecret` | **required, ≥16 chars** | HMAC key for session cookies. Must NOT equal `apiKey`. Throws on boot otherwise. |
+| `sessionTtlDays` | `7` | |
+| `cookieName` | `'wak_session'` | |
+| `cookieSecure` | `false` | Set `true` behind HTTPS. |
+| `routerMountPath` | `'/api'` | Used to build screenshot URLs that resolve to the auth-gated endpoint. |
+| `screenshotsDir` | required | Absolute path on disk. |
+| `express` | required | The imported `express` module. |
+| `jsonLimit` | `'5mb'` | |
+| `mirror` | `undefined` | `{ baseUrl, routerMountPath?, mirrorKey, timeoutMs? }` — see distributed setup. |
+| `mirrorKey` | `undefined` | Set on the receiving side of a mirror pair. ≥16 chars, distinct from `apiKey` + `sessionSecret`. |
+| `onInsert` | `undefined` | Hook called after each new comment. |
 
-### `seedIfEmpty(storage, { departments, users })`
+### `seedIfEmpty(storage, { departments, users }, opts?)`
 
-Idempotent helper — only writes when the corresponding tables are empty. Use it to bootstrap the first admin and the initial set of departments at boot.
+Idempotent first-run-only bootstrap. Skips when the corresponding table already has any rows so admin deletes/edits survive restarts. Pass `{ force: true }` to re-upsert regardless (tests, fixture rebuilds, scripted bootstrap).
 
 ---
 
@@ -339,19 +382,37 @@ git clone <this-repo>
 cd web-annotate-kit/example
 npm install
 npm run dev
-# open http://localhost:5180
+# open http://localhost:5197
 ```
 
-Demo passwords (each role / department combo):
-- `alice` — admin
-- `diana` — director
-- `leo` — lead of Design
-- `lena` — lead of Linguistics
-- `rita`, `rob` — reviewers
+Demo credentials (use `id` + password to log in):
 
-You'll get two sample pages, a role-aware dashboard, an admin panel, and a SQLite file at `example/data/reviews.db`.
+| Role | id | password |
+|---|---|---|
+| admin | `alice` | `alice-pw-2026` |
+| director | `diana` | `diana-pw-2026` |
+| lead · Design | `leo` | `leo-pw-2026` |
+| lead · Linguistics | `lena` | `lena-pw-2026` |
+| reviewer | `rita` | `rita-pw-2026` |
+| reviewer | `rob` | `rob-pw-2026` |
+
+You'll get two sample pages, a role-aware dashboard, an admin panel, and a SQLite file at `example/data/reviews.db`. Try the full flow: log in as Rita, drop a pin targeting Design; switch to Leo, accept it; switch to Diana, resolve it.
 
 ---
+
+## Upgrading from 0.2.x → 0.3.x
+
+The 0.3 line introduces real auth, roles and departments. **Breaking on the API surface:**
+
+- `ReviewProvider` no longer accepts `users`. Seed users server-side with `seedIfEmpty` and manage them from the in-app admin panel.
+- Login is keyed by **id + password**. The provider's `login()` signature changed to `login(id, password)`. The login form has two fields now.
+- `createReviewRouter` requires `sessionSecret` (≥16 chars, distinct from `apiKey`). It throws at boot otherwise.
+- The router gates `/reviews`, `/departments` and `/screenshots/:file` behind a session. Do **not** add `app.use('/screenshots', express.static(...))` on the host — it would bypass auth.
+
+**On the database:**
+
+- Schema migrates automatically on first boot. Pre-existing `reviews` rows get `status='resolved'` if they had `resolved=1`, `department='general'`, and an `author_id` backfill where the display name is unique. Notes blob → `wak_notes` table. New `wak_users` and `wak_departments` tables created.
+- No data loss path. Roll-forward only.
 
 ## License
 
