@@ -90,10 +90,11 @@ const CREATE_SQL = `
     tag_name TEXT,
     screenshot_url TEXT
   );
+  -- Indexes on always-present columns are safe to create here.
+  -- Indexes on columns added by migration (status, department) are created later,
+  -- AFTER ensureColumn() runs, so upgrading from a pre-0.3 schema doesn't crash.
   CREATE INDEX IF NOT EXISTS idx_reviews_page ON reviews(page);
   CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at);
-  CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
-  CREATE INDEX IF NOT EXISTS idx_reviews_department ON reviews(department);
 
   CREATE TABLE IF NOT EXISTS wak_notes (
     id           TEXT PRIMARY KEY,
@@ -160,6 +161,11 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
   ensureColumn(db, 'reviews', 'author_id', 'TEXT');
   ensureColumn(db, 'reviews', 'accepted_by_id', 'TEXT');
   ensureColumn(db, 'wak_users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
+
+  // Indexes on migrated columns must run AFTER ensureColumn(), otherwise
+  // CREATE INDEX on a non-existent column would crash on pre-0.3 databases.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reviews_status     ON reviews(status)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reviews_department ON reviews(department)`);
 
   // One-time migration: move JSON notes blob into the new wak_notes table.
   // Idempotent: only runs when wak_notes is empty AND the legacy `notes` column has rows with non-empty arrays.

@@ -33,6 +33,13 @@ interface ReviewContextType {
   addNote: (id: string, text: string) => Promise<void>;
   refreshUsers: () => Promise<void>;
   refreshDepartments: () => Promise<void>;
+  /**
+   * Authenticated fetch wrapper. Use this for any custom request the kit
+   * doesn't expose directly (e.g. admin POST /users). On 401/403 it auto-clears
+   * client state and forces a relogin, which keeps the UI consistent across
+   * tabs when an admin demotes/deletes the current user mid-session.
+   */
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response | null>;
   exportComments: () => string;
   exportCompact: () => string;
 }
@@ -99,6 +106,7 @@ async function captureScreenshot(
   commentId: string,
   xPercent: number,
   yPx: number,
+  uploadFetch: (input: string, init?: RequestInit) => Promise<Response | null>,
 ): Promise<string | null> {
   let stream: MediaStream;
   try {
@@ -147,13 +155,12 @@ async function captureScreenshot(
     ctx.stroke();
 
     const image = canvas.toDataURL('image/png');
-    const res = await fetch(`${apiBase}/screenshots`, {
+    const res = await uploadFetch(`${apiBase}/screenshots`, {
       method: 'POST',
-      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: commentId, image }),
     });
-    if (!res.ok) return null;
+    if (!res || !res.ok) return null;
     const { url } = await res.json();
     return url as string;
   } catch (e) {
@@ -192,28 +199,54 @@ export function ReviewProvider({
     localStorage.setItem(SK_COMMENTS, JSON.stringify(data));
   }, [SK_COMMENTS]);
 
+  /* ── Auth-failure cleanup ───────────────────────────────── */
+  // When the server reports 401/403 mid-session (revoked cookie, deleted user,
+  // role downgraded, password reset by an admin, …) we MUST drop every piece
+  // of cached review state from the client so the now-unauthenticated browser
+  // can't keep showing previously fetched data on the screen or in localStorage.
+
+  const handleAuthFailure = useCallback(() => {
+    setUser(null);
+    setUsers(null);
+    setComments([]);
+    setDepartments([]);
+    try { localStorage.removeItem(SK_COMMENTS); } catch { /* ignore */ }
+    if (syncRef.current) { clearInterval(syncRef.current); syncRef.current = null; }
+  }, [SK_COMMENTS]);
+
+  // Returns the response, or null if the request should be treated as failed.
+  // On 401/403 it wipes session state. The two effect hooks below are watching
+  // `user` and will tear down polling automatically once we set it to null.
+  const authedFetch = useCallback(async (input: string, init?: RequestInit): Promise<Response | null> => {
+    try {
+      const res = await fetch(input, { credentials: 'same-origin', ...init });
+      if (res.status === 401 || res.status === 403) {
+        handleAuthFailure();
+        return null;
+      }
+      return res;
+    } catch {
+      return null;
+    }
+  }, [handleAuthFailure]);
+
   /* ── Network helpers ───────────────────────────────────── */
 
   const fetchComments = useCallback(async (): Promise<ReviewComment[] | null> => {
-    try {
-      const res = await fetch(`${apiBase}/reviews`, { credentials: 'same-origin' });
-      if (!res.ok) return null;
-      return (await res.json()) as ReviewComment[];
-    } catch { return null; }
-  }, [apiBase]);
+    const res = await authedFetch(`${apiBase}/reviews`);
+    if (!res || !res.ok) return null;
+    return (await res.json()) as ReviewComment[];
+  }, [apiBase, authedFetch]);
 
   const sendAction = useCallback(async (action: string, data: Record<string, unknown>) => {
-    try {
-      const res = await fetch(`${apiBase}/reviews`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, data }),
-      });
-      if (!res.ok) return null;
-      return (await res.json()) as ReviewComment[];
-    } catch { return null; }
-  }, [apiBase]);
+    const res = await authedFetch(`${apiBase}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, data }),
+    });
+    if (!res || !res.ok) return null;
+    return (await res.json()) as ReviewComment[];
+  }, [apiBase, authedFetch]);
 
   const refresh = useCallback(async () => {
     const remote = await fetchComments();
@@ -221,27 +254,25 @@ export function ReviewProvider({
   }, [fetchComments, cacheLocally]);
 
   const refreshDepartments = useCallback(async () => {
-    try {
-      const res = await fetch(`${apiBase}/departments`, { credentials: 'same-origin' });
-      if (!res.ok) return;
-      setDepartments(await res.json());
-    } catch { /* offline */ }
-  }, [apiBase]);
+    const res = await authedFetch(`${apiBase}/departments`);
+    if (!res || !res.ok) return;
+    setDepartments(await res.json());
+  }, [apiBase, authedFetch]);
 
   const refreshUsers = useCallback(async () => {
-    try {
-      const res = await fetch(`${apiBase}/users`, { credentials: 'same-origin' });
-      if (!res.ok) { setUsers(null); return; }
-      setUsers(await res.json());
-    } catch { setUsers(null); }
-  }, [apiBase]);
+    const res = await authedFetch(`${apiBase}/users`);
+    if (!res || !res.ok) { setUsers(null); return; }
+    setUsers(await res.json());
+  }, [apiBase, authedFetch]);
 
+  // /auth/me is the boot-time check. We don't go through authedFetch here
+  // because at boot 401 just means "not logged in yet" — we don't want to fire
+  // the full cleanup cascade that signals "you got kicked out" for the
+  // first-load case. We do still wipe stale cache, though.
   const fetchMe = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/auth/me`, { credentials: 'same-origin' });
       if (!res.ok) {
-        // No (or revoked) session: drop any locally-cached comments so a shared
-        // browser can't reveal them after the cookie was invalidated server-side.
         setUser(null);
         setComments([]);
         try { localStorage.removeItem(SK_COMMENTS); } catch { /* ignore */ }
@@ -328,7 +359,7 @@ export function ReviewProvider({
       try {
         const timeoutP = new Promise<null>((resolve) => setTimeout(() => resolve(null), screenshotTimeoutMs));
         const screenshotUrl = await Promise.race([
-          captureScreenshot(apiBase, id, partial.x, partial.y),
+          captureScreenshot(apiBase, id, partial.x, partial.y, authedFetch),
           timeoutP,
         ]);
         if (screenshotUrl) {
@@ -339,7 +370,7 @@ export function ReviewProvider({
         console.warn('[web-annotate-kit] screenshot skipped:', (e as Error).message);
       }
     }
-  }, [user, cacheLocally, sendAction, captureScreenshots, apiBase, screenshotTimeoutMs, refresh]);
+  }, [user, cacheLocally, sendAction, captureScreenshots, apiBase, screenshotTimeoutMs, refresh, authedFetch]);
 
   const updateComment = useCallback(async (id: string, text: string) => {
     setComments((prev) => {
@@ -414,7 +445,7 @@ export function ReviewProvider({
         config: { apiBase, apiKey, captureScreenshots, storageKeyPrefix, resolvedOpacity, resolvedPinOpacity },
         login, logout,
         addComment, updateComment, deleteComment, resolveComment, acceptComment, addNote,
-        refreshUsers, refreshDepartments,
+        refreshUsers, refreshDepartments, authedFetch,
         exportComments, exportCompact,
       }}
     >

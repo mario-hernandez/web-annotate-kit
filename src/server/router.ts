@@ -111,12 +111,20 @@ export interface CreateReviewRouterOptions {
 }
 
 /**
- * Seed users + departments into storage. Idempotent and safe under concurrent
- * boots: each row is written via INSERT OR IGNORE / upsert, so two instances
- * starting at once both succeed and only one creates each row.
+ * Seed users + departments into storage on first boot. By default this is a
+ * "first-run-only" operation: if the corresponding table already has any rows,
+ * it is left alone. That way an admin who deletes a seeded user (e.g. one whose
+ * password leaked) doesn't see them resurrected on the next restart, and
+ * department edits are not overwritten by code on every boot.
  *
- * `seededUsers` and `seededDepartments` count rows this call actually wrote
- * (i.e. that didn't already exist).
+ * Set `opts.force = true` to upsert/insert-if-missing on every call regardless
+ * of existing rows — useful for tests, fixture rebuilds, or bootstrap CLIs.
+ *
+ * Concurrency: when seeding does run on an empty table, each insert uses
+ * INSERT OR IGNORE so two instances booting against the same fresh DB will
+ * both complete cleanly and the row count stays correct.
+ *
+ * `seededUsers` and `seededDepartments` count rows this call actually wrote.
  */
 export async function seedIfEmpty(
   storage: { users: UserStorage; departments: DepartmentStorage },
@@ -127,33 +135,38 @@ export async function seedIfEmpty(
       role: UserRecord['role']; departmentId?: string | null;
     }>;
   },
+  opts: { force?: boolean } = {},
 ): Promise<{ seededUsers: number; seededDepartments: number }> {
   let seededUsers = 0;
   let seededDepartments = 0;
 
-  // Departments: upsert is already idempotent (ON CONFLICT DO UPDATE).
-  // We don't track "did it already exist" precisely here; the count is best-effort.
   if (data.departments?.length) {
-    const before = new Set((await storage.departments.list()).map((d) => d.id));
-    for (const d of data.departments) {
-      await storage.departments.upsert(d);
-      if (!before.has(d.id)) seededDepartments++;
+    const existing = await storage.departments.list();
+    if (opts.force || existing.length === 0) {
+      const beforeIds = new Set(existing.map((d) => d.id));
+      for (const d of data.departments) {
+        await storage.departments.upsert(d);
+        if (!beforeIds.has(d.id)) seededDepartments++;
+      }
     }
   }
   if (data.users?.length) {
-    const now = new Date().toISOString();
-    for (const u of data.users) {
-      const created = await storage.users.insertIfNotExists({
-        id: u.id,
-        name: u.name,
-        passwordHash: hashPassword(u.password),
-        color: u.color,
-        role: u.role,
-        departmentId: u.departmentId ?? null,
-        sessionVersion: 1,
-        createdAt: now,
-      });
-      if (created) seededUsers++;
+    const userCount = await storage.users.count();
+    if (opts.force || userCount === 0) {
+      const now = new Date().toISOString();
+      for (const u of data.users) {
+        const created = await storage.users.insertIfNotExists({
+          id: u.id,
+          name: u.name,
+          passwordHash: hashPassword(u.password),
+          color: u.color,
+          role: u.role,
+          departmentId: u.departmentId ?? null,
+          sessionVersion: 1,
+          createdAt: now,
+        });
+        if (created) seededUsers++;
+      }
     }
   }
   return { seededUsers, seededDepartments };
@@ -225,11 +238,9 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       }
       for (const r of all) {
         if (!r.authorId && usersByName.has(r.author)) {
-          // No setter for author_id on the public ReviewStorage interface; we
-          // intentionally keep it minimal. The migration is best-effort: if the
-          // adapter doesn't expose backfill, the legacy row stays ownerless.
-          const setter = (storage.reviews as unknown as { setAuthorId?: (id: string, authorId: string) => Promise<void> }).setAuthorId;
-          if (setter) await setter(r.id, usersByName.get(r.author)!);
+          // Best-effort: storage adapters may omit setAuthorId. If absent, the
+          // legacy row stays ownerless (only director/admin can act on it).
+          await storage.reviews.setAuthorId?.(r.id, usersByName.get(r.author)!);
         }
       }
     } catch (e) {

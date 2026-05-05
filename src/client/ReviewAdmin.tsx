@@ -16,7 +16,7 @@ export default function ReviewAdmin({
   accentColor = '#305B91',
   title = 'Admin',
 }: ReviewAdminProps = {}) {
-  const { user, departments, users, refreshUsers, refreshDepartments, config } = useReview();
+  const { user, departments, users, refreshUsers, refreshDepartments, authedFetch, config } = useReview();
   const { apiBase } = config;
 
   const [tab, setTab] = useState<'users' | 'departments'>('users');
@@ -73,6 +73,7 @@ export default function ReviewAdmin({
         {tab === 'departments' && (
           <DepartmentsPanel
             apiBase={apiBase}
+            authedFetch={authedFetch}
             departments={departments}
             onChanged={() => { refreshDepartments(); setError(''); }}
             onError={setError}
@@ -83,6 +84,7 @@ export default function ReviewAdmin({
         {tab === 'users' && (
           <UsersPanel
             apiBase={apiBase}
+            authedFetch={authedFetch}
             users={users}
             departments={departments}
             currentUserId={user.id}
@@ -101,20 +103,24 @@ export default function ReviewAdmin({
 /* ─── Departments ──────────────────────────────────────────── */
 
 function DepartmentsPanel({
-  apiBase, departments, onChanged, onError, accentColor,
-}: { apiBase: string; departments: ReviewDepartment[]; onChanged: () => void; onError: (s: string) => void; accentColor: string }) {
+  apiBase, authedFetch, departments, onChanged, onError, accentColor,
+}: {
+  apiBase: string;
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response | null>;
+  departments: ReviewDepartment[];
+  onChanged: () => void; onError: (s: string) => void; accentColor: string;
+}) {
   const [draft, setDraft] = useState<ReviewDepartment>({ id: '', name: '', color: '#6B7280' });
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft.id.trim() || !draft.name.trim()) { onError('id and name are required'); return; }
-    const res = await fetch(`${apiBase}/departments`, {
+    const res = await authedFetch(`${apiBase}/departments`, {
       method: 'POST',
-      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(draft),
     });
-    if (!res.ok) { onError(await res.text() || 'Failed to save department'); return; }
+    if (!res || !res.ok) { onError((res && await res.text()) || 'Failed to save department'); return; }
     setDraft({ id: '', name: '', color: '#6B7280' });
     onChanged();
   };
@@ -122,10 +128,8 @@ function DepartmentsPanel({
   const onDelete = async (id: string) => {
     const ok = confirm(`Delete department "${id}"? Comments assigned to it will keep the id but will read as "${id}".`);
     if (!ok) return;
-    const res = await fetch(`${apiBase}/departments/${encodeURIComponent(id)}`, {
-      method: 'DELETE', credentials: 'same-origin',
-    });
-    if (!res.ok) { onError('Failed to delete'); return; }
+    const res = await authedFetch(`${apiBase}/departments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res || !res.ok) { onError('Failed to delete'); return; }
     onChanged();
   };
 
@@ -184,9 +188,11 @@ interface UserDraft {
 const emptyUserDraft = (): UserDraft => ({ id: '', name: '', password: '', color: '#6B7280', role: 'reviewer', departmentId: null });
 
 function UsersPanel({
-  apiBase, users, departments, currentUserId, onChanged, onError, accentColor,
+  apiBase, authedFetch, users, departments, currentUserId, onChanged, onError, accentColor,
 }: {
-  apiBase: string; users: ReviewUser[] | null; departments: ReviewDepartment[];
+  apiBase: string;
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response | null>;
+  users: ReviewUser[] | null; departments: ReviewDepartment[];
   currentUserId: string; onChanged: () => void; onError: (s: string) => void; accentColor: string;
 }) {
   const [draft, setDraft] = useState<UserDraft>(emptyUserDraft);
@@ -208,12 +214,12 @@ function UsersPanel({
     };
     if (!editingId) body.id = draft.id;
     if (draft.password) body.password = draft.password;
-    const res = await fetch(url, {
-      method, credentials: 'same-origin',
+    const res = await authedFetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) { onError(await res.text() || 'Failed to save user'); return; }
+    if (!res || !res.ok) { onError((res && await res.text()) || 'Failed to save user'); return; }
     setDraft(emptyUserDraft());
     setEditingId(null);
     onChanged();
@@ -230,10 +236,8 @@ function UsersPanel({
     if (id === currentUserId) { onError("You can't delete yourself."); return; }
     const ok = confirm(`Delete user "${id}"? Their existing comments will be preserved.`);
     if (!ok) return;
-    const res = await fetch(`${apiBase}/users/${encodeURIComponent(id)}`, {
-      method: 'DELETE', credentials: 'same-origin',
-    });
-    if (!res.ok) { onError(await res.text() || 'Failed to delete'); return; }
+    const res = await authedFetch(`${apiBase}/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res || !res.ok) { onError((res && await res.text()) || 'Failed to delete'); return; }
     onChanged();
   };
 
