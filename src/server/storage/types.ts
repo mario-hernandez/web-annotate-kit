@@ -47,6 +47,8 @@ export interface ReviewStorage {
   toggleResolved(id: string): Promise<void>;
   addNote(id: string, note: ReviewNoteRecord): Promise<void>;
   delete(id: string): Promise<string | null>;
+  /** Backfill author_id on legacy rows. Optional: not all storages need to support it. */
+  setAuthorId?(id: string, authorId: string): Promise<void>;
 }
 
 /* ─── Users ──────────────────────────────────────────────── */
@@ -79,6 +81,12 @@ export interface UserStorage {
   findByPassword(password: string): Promise<UserRecord | null>;
   findById(id: string): Promise<UserRecord | null>;
   insert(record: UserRecord): Promise<void>;
+  /**
+   * Inserts only if no row with this id already exists. Atomic. Returns true
+   * when a new row was written, false when one already existed. Safe to call
+   * concurrently from multiple booting instances.
+   */
+  insertIfNotExists(record: UserRecord): Promise<boolean>;
   update(id: string, patch: Partial<Omit<UserRecord, 'id' | 'createdAt'>>): Promise<void>;
   delete(id: string): Promise<void>;
   count(): Promise<number>;

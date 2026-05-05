@@ -263,6 +263,9 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
       db.prepare('DELETE FROM reviews WHERE id = ?').run(id);
       return row?.screenshot_url ?? null;
     },
+    async setAuthorId(id, authorId) {
+      db.prepare('UPDATE reviews SET author_id = ? WHERE id = ? AND author_id IS NULL').run(authorId, id);
+    },
   };
 
   /* ── Users ────────────────────────────────────────────── */
@@ -292,6 +295,16 @@ export async function sqliteStorage(options: SqliteOptions): Promise<{
         record.id, record.name, record.passwordHash, record.color, record.role,
         record.departmentId, record.sessionVersion ?? 1, record.createdAt,
       );
+    },
+    async insertIfNotExists(record) {
+      const r = db.prepare(
+        `INSERT OR IGNORE INTO wak_users (id, name, password_hash, color, role, department_id, session_version, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id, record.name, record.passwordHash, record.color, record.role,
+        record.departmentId, record.sessionVersion ?? 1, record.createdAt,
+      );
+      return r.changes > 0;
     },
     async update(id, patch) {
       const fields: string[] = [];

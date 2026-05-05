@@ -221,6 +221,12 @@ export async function tursoStorage(options: TursoOptions): Promise<{
       await db.execute({ sql: 'DELETE FROM reviews WHERE id = ?', args: [id] });
       return url;
     },
+    async setAuthorId(id, authorId) {
+      await db.execute({
+        sql: 'UPDATE reviews SET author_id = ? WHERE id = ? AND author_id IS NULL',
+        args: [authorId, id],
+      });
+    },
   };
 
   const users: UserStorage = {
@@ -250,6 +256,17 @@ export async function tursoStorage(options: TursoOptions): Promise<{
           record.departmentId, record.sessionVersion ?? 1, record.createdAt,
         ],
       });
+    },
+    async insertIfNotExists(record) {
+      const r = await db.execute({
+        sql: `INSERT OR IGNORE INTO wak_users (id, name, password_hash, color, role, department_id, session_version, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          record.id, record.name, record.passwordHash, record.color, record.role,
+          record.departmentId, record.sessionVersion ?? 1, record.createdAt,
+        ],
+      }) as unknown as { rowsAffected?: number };
+      return (r.rowsAffected ?? 0) > 0;
     },
     async update(id, patch) {
       const fields: string[] = [];

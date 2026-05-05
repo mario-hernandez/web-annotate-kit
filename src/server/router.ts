@@ -79,15 +79,44 @@ export interface CreateReviewRouterOptions {
   express: ExpressLike;
   /** Max size of JSON body (default "5mb"). Screenshots arrive base64-encoded. */
   jsonLimit?: string;
-  /** Optional mirror config for dev environments — pull-through + write-through to prod. */
-  mirror?: { baseUrl: string; apiKey: string; timeoutMs?: number };
+  /**
+   * Optional mirror config for dev environments — pull-through + write-through
+   * of screenshots to a remote (typically prod) instance.
+   *
+   * Uses a dedicated service-to-service key (`mirrorKey`) authenticated via the
+   * `X-Mirror-Key` header against /mirror/screenshots endpoints. Separate from
+   * the user-facing `apiKey` and `sessionSecret` so a leaked mirror key only
+   * exposes the mirror surface, not user sessions or admin routes.
+   *
+   * Set `mirrorKey` on BOTH the dev (caller) and prod (callee) instances —
+   * they must match. Treat it as a long random secret.
+   */
+  mirror?: {
+    /** Remote base URL, including scheme and host. e.g. "https://staging.example.com" */
+    baseUrl: string;
+    /** Path prefix the remote router is mounted at. Default: '/api'. */
+    routerMountPath?: string;
+    /** Shared secret sent as `X-Mirror-Key`. Must match the remote's `mirrorKey`. */
+    mirrorKey: string;
+    timeoutMs?: number;
+  };
+  /**
+   * If set, this server accepts inbound mirror traffic on /mirror/screenshots
+   * authenticated by `X-Mirror-Key`. Required on the receiving side of a mirror
+   * pair. Must NOT equal `apiKey` or `sessionSecret` (separate trust scope).
+   */
+  mirrorKey?: string;
   /** Optional hook called right after a successful insert. */
   onInsert?: (record: ReviewRecord) => void | Promise<void>;
 }
 
 /**
- * Seed users + departments into storage iff both tables are empty. Idempotent.
- * Call this once during host-app boot to bootstrap a fresh DB.
+ * Seed users + departments into storage. Idempotent and safe under concurrent
+ * boots: each row is written via INSERT OR IGNORE / upsert, so two instances
+ * starting at once both succeed and only one creates each row.
+ *
+ * `seededUsers` and `seededDepartments` count rows this call actually wrote
+ * (i.e. that didn't already exist).
  */
 export async function seedIfEmpty(
   storage: { users: UserStorage; departments: DepartmentStorage },
@@ -99,20 +128,22 @@ export async function seedIfEmpty(
     }>;
   },
 ): Promise<{ seededUsers: number; seededDepartments: number }> {
-  const [uCount, dCount] = await Promise.all([storage.users.count(), storage.departments.count()]);
   let seededUsers = 0;
   let seededDepartments = 0;
 
-  if (dCount === 0 && data.departments?.length) {
+  // Departments: upsert is already idempotent (ON CONFLICT DO UPDATE).
+  // We don't track "did it already exist" precisely here; the count is best-effort.
+  if (data.departments?.length) {
+    const before = new Set((await storage.departments.list()).map((d) => d.id));
     for (const d of data.departments) {
       await storage.departments.upsert(d);
-      seededDepartments++;
+      if (!before.has(d.id)) seededDepartments++;
     }
   }
-  if (uCount === 0 && data.users?.length) {
+  if (data.users?.length) {
     const now = new Date().toISOString();
     for (const u of data.users) {
-      await storage.users.insert({
+      const created = await storage.users.insertIfNotExists({
         id: u.id,
         name: u.name,
         passwordHash: hashPassword(u.password),
@@ -122,7 +153,7 @@ export async function seedIfEmpty(
         sessionVersion: 1,
         createdAt: now,
       });
-      seededUsers++;
+      if (created) seededUsers++;
     }
   }
   return { seededUsers, seededDepartments };
@@ -133,7 +164,7 @@ export async function seedIfEmpty(
 export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike {
   const {
     storage, apiKey, screenshotsDir, express,
-    jsonLimit = '5mb', mirror, onInsert,
+    jsonLimit = '5mb', mirror, mirrorKey, onInsert,
     sessionSecret,
     sessionTtlDays = 7,
     cookieName = 'wak_session',
@@ -156,24 +187,53 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       "`apiKey` is publicly readable from the client bundle; reusing it lets anyone forge sessions.",
     );
   }
+  if (mirrorKey && (mirrorKey === apiKey || mirrorKey === sessionSecret)) {
+    throw new Error(
+      "web-annotate-kit: `mirrorKey` must be distinct from `apiKey` and `sessionSecret`. " +
+      "Each secret has a different blast radius if leaked.",
+    );
+  }
+  if (mirrorKey && mirrorKey.length < 16) {
+    throw new Error("web-annotate-kit: `mirrorKey` must be at least 16 chars.");
+  }
 
   if (!existsSync(screenshotsDir)) mkdirSync(screenshotsDir, { recursive: true });
 
-  // One-shot migration: pre-0.3.4 servers persisted screenshot URLs as
-  // `/screenshots/<file>.png`, which only worked when the host app exposed a
-  // public static mount that bypassed authentication. Rewrite them to the
-  // canonical, auth-gated `${mountPath}/screenshots/<file>.png`.
+  // One-shot migrations on first boot of this version. All idempotent.
   void (async () => {
     try {
       const all = await storage.reviews.list();
+
+      // (a) Rewrite legacy screenshot URLs (`/screenshots/...` → `${mountPath}/screenshots/...`).
       for (const r of all) {
         if (r.screenshotUrl && r.screenshotUrl.startsWith('/screenshots/')) {
-          const fixed = `${mountPath}${r.screenshotUrl}`;
-          await storage.reviews.updateScreenshot(r.id, fixed);
+          await storage.reviews.updateScreenshot(r.id, `${mountPath}${r.screenshotUrl}`);
+        }
+      }
+
+      // (b) Backfill author_id on legacy rows (created before v0.3 had stable ids).
+      // Only fill when there is exactly one user with that display name; ambiguous
+      // matches stay null so name collisions don't hand ownership to the wrong account.
+      const users = await storage.users.list();
+      const usersByName = new Map<string, string>(); // name → id (when unique)
+      const nameCounts = new Map<string, number>();
+      for (const u of users) {
+        nameCounts.set(u.name, (nameCounts.get(u.name) ?? 0) + 1);
+      }
+      for (const u of users) {
+        if (nameCounts.get(u.name) === 1) usersByName.set(u.name, u.id);
+      }
+      for (const r of all) {
+        if (!r.authorId && usersByName.has(r.author)) {
+          // No setter for author_id on the public ReviewStorage interface; we
+          // intentionally keep it minimal. The migration is best-effort: if the
+          // adapter doesn't expose backfill, the legacy row stays ownerless.
+          const setter = (storage.reviews as unknown as { setAuthorId?: (id: string, authorId: string) => Promise<void> }).setAuthorId;
+          if (setter) await setter(r.id, usersByName.get(r.author)!);
         }
       }
     } catch (e) {
-      console.warn('[web-annotate-kit] screenshot URL migration failed:', (e as Error).message);
+      console.warn('[web-annotate-kit] startup migration failed:', (e as Error).message);
     }
   })();
 
@@ -267,9 +327,13 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       }
       // Per-id + per-IP rate limit. Throttles brute-force attempts without
       // affecting legitimate users on other accounts.
-      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-        || (req as unknown as { ip?: string }).ip
-        || 'unknown';
+      // We trust `req.ip` only — it's what Express resolves AFTER the host
+      // configures `app.set('trust proxy', ...)`. Reading raw X-Forwarded-For
+      // here would let an attacker rotate the header to evade the lock.
+      // Behind a load balancer, the host MUST configure trust proxy so req.ip
+      // reflects the real client; otherwise everything coalesces under the LB IP
+      // (still safe — just throttles the proxy as one client).
+      const ip = (req as unknown as { ip?: string }).ip || 'unknown';
       const rlKey = `${id.trim()}::${ip}`;
       if (loginIsLocked(rlKey)) {
         return res.status(429).json({ error: 'Too many attempts. Try again in a minute.' });
@@ -476,9 +540,13 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
       if (mirror) {
         const ac = new AbortController();
         const t = setTimeout(() => ac.abort(), mirror.timeoutMs ?? 5000);
-        fetch(`${mirror.baseUrl}/api/screenshots`, {
+        const remoteMount = (mirror.routerMountPath ?? '/api').replace(/\/+$/, '');
+        // Service-to-service: hit the dedicated mirror endpoint authenticated by
+        // X-Mirror-Key. We do NOT reuse the user-facing POST /screenshots which
+        // requires a session cookie this server doesn't have.
+        fetch(`${mirror.baseUrl}${remoteMount}/mirror/screenshots`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': mirror.apiKey },
+          headers: { 'Content-Type': 'application/json', 'X-Mirror-Key': mirror.mirrorKey },
           body: JSON.stringify({ id, image }),
           signal: ac.signal,
         })
@@ -511,6 +579,50 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
     }
   });
 
+  /* ─────────────────────────────────────────────────────── */
+  /* Mirror — service-to-service (only when mirrorKey is set) */
+  /* ─────────────────────────────────────────────────────── */
+
+  if (mirrorKey) {
+    const requireMirrorKey: HandlerLike = (req, res, next) => {
+      const got = req.headers['x-mirror-key'];
+      // Strict equality: timing-safe-ish (string compare on a tiny header is fine here).
+      if (typeof got !== 'string' || got !== mirrorKey) {
+        return res.status(401).json({ error: 'Mirror auth required' });
+      }
+      next?.();
+    };
+
+    // Inbound write-through: a peer (typically dev) pushes a captured screenshot
+    // here so it lives on this filesystem too. No session cookie involved.
+    router.post('/mirror/screenshots', requireMirrorKey, (req, res) => {
+      try {
+        const { id, image } = req.body as { id?: string; image?: string };
+        if (!id || !image) return res.status(400).json({ error: 'Missing id or image' });
+        if (!image.startsWith('data:image/png;base64,')) return res.status(400).json({ error: 'Invalid image format' });
+        const filename = safeFilename(id);
+        const filepath = join(screenshotsDir, filename);
+        const base64Data = image.replace(/^data:image\/png;base64,/, '');
+        writeFileSync(filepath, Buffer.from(base64Data, 'base64'));
+        res.json({ url: `${mountPath}/screenshots/${filename}` });
+      } catch (e) {
+        res.status(500).json({ error: (e as Error).message });
+      }
+    });
+
+    // Inbound pull-through: a peer asks for a file we may have. We do NOT consult
+    // the comments table here — the mirror channel is for raw PNGs and the
+    // requesting peer has already decided it needs this file. The X-Mirror-Key
+    // is the only authorization gate.
+    router.get('/mirror/screenshots/:file', requireMirrorKey, (req, res) => {
+      const filename = basename(req.params.file);
+      if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) return res.status(400).end();
+      const filepath = join(screenshotsDir, filename);
+      if (existsSync(filepath)) return res.sendFile(filepath);
+      return res.status(404).end();
+    });
+  }
+
   router.get('/screenshots/:file', requireSession, async (req, res) => {
     const filename = basename(req.params.file);
     if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) return res.status(400).end();
@@ -519,7 +631,10 @@ export function createReviewRouter(opts: CreateReviewRouterOptions): RouterLike 
 
     if (mirror) {
       try {
-        const r = await fetch(`${mirror.baseUrl}/screenshots/${filename}`);
+        const remoteMount = (mirror.routerMountPath ?? '/api').replace(/\/+$/, '');
+        const r = await fetch(`${mirror.baseUrl}${remoteMount}/mirror/screenshots/${filename}`, {
+          headers: { 'X-Mirror-Key': mirror.mirrorKey },
+        });
         if (!r.ok) return res.status(404).end();
         const buf = Buffer.from(await r.arrayBuffer());
         writeFileSync(filepath, buf);

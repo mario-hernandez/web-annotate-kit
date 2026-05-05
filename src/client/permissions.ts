@@ -13,9 +13,8 @@ export function canActOnComment(
 ): boolean {
   if (!user) return false;
 
-  const isMine = comment.authorId
-    ? comment.authorId === user.id
-    : comment.author === user.name;
+  // Mirrors the server: legacy rows without authorId have no provable owner.
+  const isMine = !!comment.authorId && comment.authorId === user.id;
   const isLeadOfThisDept =
     user.role === 'lead' && (comment.department === user.departmentId || comment.department === 'general');
 

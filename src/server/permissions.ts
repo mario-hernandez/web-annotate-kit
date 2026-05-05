@@ -20,12 +20,12 @@ export function canActOnComment(
 ): boolean {
   if (!user) return false;
 
-  // Identity is keyed to the immutable user id. For legacy rows without an authorId
-  // (imported from < v0.3), fall back to the display name — those rows lose strong
-  // authorship identity but at least preserve "looks like mine" for the original creator.
-  const isMine = comment.authorId
-    ? comment.authorId === user.id
-    : comment.author === user.name;
+  // Identity is keyed to the immutable user id. Legacy rows imported from < v0.3
+  // that still have authorId === null have no provable owner — display names are
+  // mutable and not unique, so falling back to name comparison would let a renamed
+  // or duplicate-named account hijack old comments. Treat ownership as unknown.
+  // (`createReviewRouter` runs a backfill on boot to fill author_id from unique names.)
+  const isMine = !!comment.authorId && comment.authorId === user.id;
 
   const isLeadOfThisDept =
     user.role === 'lead' && (comment.department === user.departmentId || comment.department === 'general');

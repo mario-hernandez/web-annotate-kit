@@ -74,6 +74,10 @@ export function memoryStorage(): {
       notesByReview.delete(id);
       return r?.screenshotUrl ?? null;
     },
+    async setAuthorId(id, authorId) {
+      const r = reviews.get(id);
+      if (r) reviews.set(id, { ...r, authorId });
+    },
   };
 
   const usersApi: UserStorage = {
@@ -87,6 +91,11 @@ export function memoryStorage(): {
     },
     async findById(id) { return users.get(id) ?? null; },
     async insert(record) { users.set(record.id, { ...record }); },
+    async insertIfNotExists(record) {
+      if (users.has(record.id)) return false;
+      users.set(record.id, { ...record });
+      return true;
+    },
     async update(id, patch) {
       const u = users.get(id);
       if (!u) return;

@@ -236,23 +236,42 @@ Screenshots are stored as PNG files on the server filesystem; only the URL is ke
 
 If your team comments on a live URL (e.g. `staging.example.com`) but you also run a local dev server against the same database, screenshots end up split between the two filesystems. The router has an optional `mirror` config that turns the dev server into a **pull-through cache** and **write-through mirror** to production.
 
+Mirror traffic uses a dedicated service-to-service key (`mirrorKey`) authenticated via the `X-Mirror-Key` header — completely separate from user sessions and the client `apiKey`. Set `mirrorKey` on **both** instances; they must match.
+
+**On prod (the receiving side):**
+
 ```js
 app.use('/api', createReviewRouter({
   storage,
   apiKey: process.env.REVIEW_API_KEY,
+  sessionSecret: process.env.REVIEW_SESSION_SECRET,
+  mirrorKey: process.env.REVIEW_MIRROR_KEY,   // ≥16 chars, distinct from apiKey + sessionSecret
   screenshotsDir: './screenshots',
   express,
-  mirror: process.env.NODE_ENV !== 'production' ? {
-    baseUrl: 'https://staging.example.com',
-    apiKey: process.env.REVIEW_API_KEY,
-    timeoutMs: 5000,
-  } : undefined,
 }));
 ```
 
-- Uploads on dev → also POSTed to prod (fire-and-forget, 5s timeout).
-- Misses on `GET /screenshots/:id` → pulled from prod and cached locally.
-- Guarded so the production server never mirrors to itself.
+**On dev (the calling side):**
+
+```js
+app.use('/api', createReviewRouter({
+  storage,
+  apiKey: process.env.REVIEW_API_KEY,
+  sessionSecret: process.env.REVIEW_SESSION_SECRET,
+  screenshotsDir: './screenshots',
+  express,
+  mirror: {
+    baseUrl: 'https://staging.example.com',
+    routerMountPath: '/api',                  // prod's mount path (default '/api')
+    mirrorKey: process.env.REVIEW_MIRROR_KEY, // must match prod
+    timeoutMs: 5000,
+  },
+}));
+```
+
+- Uploads on dev → also POSTed to `${prod}/api/mirror/screenshots` with `X-Mirror-Key`. Fire-and-forget, 5s timeout.
+- Misses on `GET /screenshots/:file` → pulled from `${prod}/api/mirror/screenshots/:file` with the same header and cached locally.
+- The mirror endpoints are only registered when `mirrorKey` is set, so the prod server doesn't expose them by default.
 
 ---
 
@@ -264,7 +283,8 @@ app.use('/api', createReviewRouter({
 - Authentication issues an **HTTP-only signed session cookie** (HMAC-SHA256). The cookie is unreadable from JS, so XSS can't steal it. The signing key is `sessionSecret` (mandatory, ≥16 chars, must NOT equal `apiKey` — `apiKey` ships in the client bundle; reusing it would let anyone forge sessions). Generate with `openssl rand -hex 32`.
 - Permissions are enforced server-side from the session — a reviewer can't curl-delete others' pins; a lead can't accept comments outside their department.
 - The `apiKey` is still embedded in the client bundle (used only for the login endpoint). It's the gate to the password form, not the gate to the data.
-- Client-side rate-limit on failed logins lives in `localStorage` (easy to bypass). Add `express-rate-limit` server-side for hostile traffic.
+- Server-side rate-limit on `/auth/login`: per-(id, IP) exponential lockout (5s → 15s → 60s → 5min → 15min). The IP comes from `req.ip`. **If you run behind a proxy/load balancer, configure `app.set('trust proxy', ...)` on the host Express app** so `req.ip` reflects the real client. Without that, all logins coalesce to the proxy IP — still safe (single bucket) but doesn't isolate per attacker.
+- Client-side rate-limit on the login form lives in `localStorage` (easy to bypass). The server-side limit above is the real defence.
 - `safeFilename` sanitizes screenshot IDs to block path traversal.
 
 ---
