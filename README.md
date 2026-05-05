@@ -67,36 +67,55 @@ npm install react react-dom express
 
 ## Quick start
 
-### 1. Run the schema
-
-Either call the adapter (it creates the table on first use) or apply `web-annotate-kit/schema.sql` manually. SQLite and Turso both work.
-
-### 2. Mount the server router
+### 1. Mount the server router and seed your team
 
 ```js
 // server.js
 import express from 'express';
-import { createReviewRouter, sqliteStorage } from 'web-annotate-kit/server';
+import { createReviewRouter, seedIfEmpty, sqliteStorage } from 'web-annotate-kit/server';
 
 const app = express();
 const storage = await sqliteStorage({ path: './reviews.db' });
 
+// Idempotent: only writes when the tables are empty.
+await seedIfEmpty(storage, {
+  departments: [
+    { id: 'design',      name: 'Design',      color: '#A855F7' },
+    { id: 'linguistics', name: 'Linguistics', color: '#10B981' },
+  ],
+  users: [
+    { id: 'alice',  name: 'Alice', password: 'alice-pass', color: '#3B82F6', role: 'admin' },
+    { id: 'diana',  name: 'Diana', password: 'diana-pass', color: '#EF4444', role: 'director' },
+    { id: 'leo',    name: 'Leo',   password: 'leo-pass',   color: '#A855F7', role: 'lead', departmentId: 'design' },
+    { id: 'rita',   name: 'Rita',  password: 'rita-pass',  color: '#F59E0B', role: 'reviewer' },
+  ],
+});
+
 app.use('/api', createReviewRouter({
   storage,
   apiKey: process.env.REVIEW_API_KEY,
+  sessionSecret: process.env.REVIEW_SESSION_SECRET, // mandatory; ≥16 chars; must NOT equal apiKey
+  routerMountPath: '/api',                          // path you mounted at; defaults to '/api'
   screenshotsDir: './screenshots',
   express,
 }));
 
-app.use('/screenshots', express.static('./screenshots'));
+// Screenshot reads go through the AUTHENTICATED router endpoint
+// (/api/screenshots/:file). Do NOT add a public `app.use('/screenshots', ...)`
+// static mount — that would bypass authentication.
+
 app.listen(3001);
 ```
 
-### 3. Wrap your React app
+Once seeded you can manage the org (add users, change roles, create departments) from the in-app **Admin panel** as any admin user — no need to redeploy.
+
+### 2. Wrap your React app
 
 ```tsx
 // main.tsx
-import { ReviewProvider, ReviewOverlay, ReviewLogin, useReview } from 'web-annotate-kit/client';
+import {
+  ReviewProvider, ReviewOverlay, ReviewDashboard, ReviewAdmin, ReviewLogin, useReview,
+} from 'web-annotate-kit/client';
 
 function Gate({ children }) {
   const { user } = useReview();
@@ -104,18 +123,34 @@ function Gate({ children }) {
   return <>{children}<ReviewOverlay /></>;
 }
 
-<ReviewProvider
-  apiKey={import.meta.env.VITE_REVIEW_API_KEY}
-  users={[
-    { id: 'alice', name: 'Alice', password: 'alice-pass', color: '#3B82F6', role: 'admin' },
-    { id: 'bob',   name: 'Bob',   password: 'bob-pass',   color: '#10B981', role: 'reviewer' },
-  ]}
->
+<ReviewProvider apiKey={import.meta.env.VITE_REVIEW_API_KEY}>
   <Gate><YourApp /></Gate>
 </ReviewProvider>
 ```
 
-That's it. Alice can now log in at your site, click the **+** button at the bottom right, and drop a pin anywhere.
+That's it. Users log in with their password (the server validates against the seeded/managed list and issues a signed HttpOnly session cookie). Click the **+** button at the bottom right to drop a pin.
+
+---
+
+## Roles and permissions
+
+The kit ships with four roles. Permissions are enforced server-side and mirrored in the UI.
+
+| Action | Reviewer | Lead | Director | Admin |
+|---|---|---|---|---|
+| Create pin | ✓ | ✓ | ✓ | ✓ |
+| Add a note ("addendum") to any pin | ✓ | ✓ | ✓ | ✓ |
+| Edit / delete own pin | ✓ | ✓ | ✓ | ✓ |
+| Edit / delete others' pins | ✗ | ✗ | ✓ | ✓ |
+| **Accept** (escalate to director) | ✗ | own dept + general | ✓ | ✓ |
+| **Resolve** (close / executed) | ✗ | ✗ | ✓ | ✓ |
+| Manage users + departments | ✗ | ✗ | ✗ | ✓ |
+
+**Lifecycle:** `open` → (lead) `accepted` → (director) `resolved`. A `lead` only escalates within their own department or `general`; everything else they see read-only (but can still annotate). The director uses the dashboard's "Escalated" filter as their inbox.
+
+### Departments
+
+Pins carry a `department` id (default `general`). When a reviewer drops a pin they pick the target department from a dropdown. The lead of that department gets it in their dashboard (mixed with `general`).
 
 ---
 
@@ -123,13 +158,22 @@ That's it. Alice can now log in at your site, click the **+** button at the bott
 
 ![Dashboard — aggregated comments across all pages, filterable by reviewer / page / status](docs/images/dashboard.png)
 
-A dedicated page at any path you choose (default `/review`) shows every comment across the site. Filter by reviewer, page, or status. Export to `.txt` (LLM-friendly — literally paste into Claude and ask for a plan) or `.json`.
+A dedicated page at any path you choose (default `/review`) shows every comment across the site. The default view is **role-aware**:
+
+- **Reviewer / admin** → all open comments.
+- **Lead** → comments addressed to their department + general, status = open.
+- **Director** → escalation **inbox** (status = accepted), pending resolution.
+
+Filter further by reviewer, page, status or department. Export to `.txt` (LLM-friendly) or `.json`.
 
 ```tsx
-import { ReviewDashboard } from 'web-annotate-kit/client';
+import { ReviewDashboard, ReviewAdmin } from 'web-annotate-kit/client';
 
-<Route path="/review" element={<ReviewDashboard title="Acme review" />} />
+<Route path="/review"        element={<ReviewDashboard title="Acme review" />} />
+<Route path="/review/admin"  element={<ReviewAdmin title="Acme admin" />} />
 ```
+
+The admin route is only useful for users with `role: 'admin'`; it's where you create/edit users and departments without redeploying.
 
 ---
 
@@ -192,23 +236,42 @@ Screenshots are stored as PNG files on the server filesystem; only the URL is ke
 
 If your team comments on a live URL (e.g. `staging.example.com`) but you also run a local dev server against the same database, screenshots end up split between the two filesystems. The router has an optional `mirror` config that turns the dev server into a **pull-through cache** and **write-through mirror** to production.
 
+Mirror traffic uses a dedicated service-to-service key (`mirrorKey`) authenticated via the `X-Mirror-Key` header — completely separate from user sessions and the client `apiKey`. Set `mirrorKey` on **both** instances; they must match.
+
+**On prod (the receiving side):**
+
 ```js
 app.use('/api', createReviewRouter({
   storage,
   apiKey: process.env.REVIEW_API_KEY,
+  sessionSecret: process.env.REVIEW_SESSION_SECRET,
+  mirrorKey: process.env.REVIEW_MIRROR_KEY,   // ≥16 chars, distinct from apiKey + sessionSecret
   screenshotsDir: './screenshots',
   express,
-  mirror: process.env.NODE_ENV !== 'production' ? {
-    baseUrl: 'https://staging.example.com',
-    apiKey: process.env.REVIEW_API_KEY,
-    timeoutMs: 5000,
-  } : undefined,
 }));
 ```
 
-- Uploads on dev → also POSTed to prod (fire-and-forget, 5s timeout).
-- Misses on `GET /screenshots/:id` → pulled from prod and cached locally.
-- Guarded so the production server never mirrors to itself.
+**On dev (the calling side):**
+
+```js
+app.use('/api', createReviewRouter({
+  storage,
+  apiKey: process.env.REVIEW_API_KEY,
+  sessionSecret: process.env.REVIEW_SESSION_SECRET,
+  screenshotsDir: './screenshots',
+  express,
+  mirror: {
+    baseUrl: 'https://staging.example.com',
+    routerMountPath: '/api',                  // prod's mount path (default '/api')
+    mirrorKey: process.env.REVIEW_MIRROR_KEY, // must match prod
+    timeoutMs: 5000,
+  },
+}));
+```
+
+- Uploads on dev → also POSTed to `${prod}/api/mirror/screenshots` with `X-Mirror-Key`. Fire-and-forget, 5s timeout.
+- Misses on `GET /screenshots/:file` → pulled from `${prod}/api/mirror/screenshots/:file` with the same header and cached locally.
+- The mirror endpoints are only registered when `mirrorKey` is set, so the prod server doesn't expose them by default.
 
 ---
 
@@ -216,12 +279,13 @@ app.use('/api', createReviewRouter({
 
 **Honest disclosure — read before deploying:**
 
-- The `apiKey` is embedded in the **client JavaScript bundle**. Anyone who opens DevTools can read it. This is acceptable for **private team review** (you control who has the URL and the password) but not for public feedback widgets.
-- Login passwords are compared in plain text client-side. Good enough for team-of-5 review; not good enough for user accounts.
-- Rate-limiting on failed login attempts is stored in `localStorage` (easy to bypass by clearing it). Server-side rate-limiting is left to the host app — add `express-rate-limit` if abuse is plausible.
-- `safeFilename` sanitizes screenshot IDs to block path traversal. UUIDs are generated with `crypto.randomUUID()`.
-
-For anything beyond internal review, fork and replace the auth layer.
+- Passwords are hashed with **scrypt** server-side (Node native, no extra deps).
+- Authentication issues an **HTTP-only signed session cookie** (HMAC-SHA256). The cookie is unreadable from JS, so XSS can't steal it. The signing key is `sessionSecret` (mandatory, ≥16 chars, must NOT equal `apiKey` — `apiKey` ships in the client bundle; reusing it would let anyone forge sessions). Generate with `openssl rand -hex 32`.
+- Permissions are enforced server-side from the session — a reviewer can't curl-delete others' pins; a lead can't accept comments outside their department.
+- The `apiKey` is still embedded in the client bundle (used only for the login endpoint). It's the gate to the password form, not the gate to the data.
+- Server-side rate-limit on `/auth/login`: per-(id, IP) exponential lockout (5s → 15s → 60s → 5min → 15min). The IP comes from `req.ip`. **If you run behind a proxy/load balancer, configure `app.set('trust proxy', ...)` on the host Express app** so `req.ip` reflects the real client. Without that, all logins coalesce to the proxy IP — still safe (single bucket) but doesn't isolate per attacker.
+- Client-side rate-limit on the login form lives in `localStorage` (easy to bypass). The server-side limit above is the real defence.
+- `safeFilename` sanitizes screenshot IDs to block path traversal.
 
 ---
 
@@ -231,28 +295,40 @@ For anything beyond internal review, fork and replace the auth layer.
 
 | Prop | Default | Notes |
 |---|---|---|
-| `users` | required | Array of `{ id, name, password, color, role }`. Password is erased before hitting state. |
-| `apiKey` | required | Sent as `X-API-Key` on mutations. Must match the server. |
+| `apiKey` | required | Sent as `X-API-Key` on the login endpoint. Must match the server. |
 | `apiBase` | `"/api"` | Base URL of the API. |
-| `captureScreenshots` | `true` | Set to `false` to disable the screenshot flow entirely. |
-| `pollIntervalMs` | `10000` | How often to re-fetch comments from the server. |
+| `captureScreenshots` | `true` | Set `false` to disable the screenshot flow. |
+| `pollIntervalMs` | `10000` | How often to re-fetch comments. |
 | `screenshotTimeoutMs` | `8000` | Abort the screenshot capture after this many ms. |
 | `storageKeyPrefix` | `"wak"` | Prefix for all `localStorage` keys. |
-| `sessionCookieName` | `"wak_session"` | Cookie name for the 30-day session. |
-| `resolvedOpacity` | `0.45` | Opacity for resolved comment cards in lists (dashboard + side panel). |
+| `resolvedOpacity` | `0.45` | Opacity for resolved comment cards in lists. |
 | `resolvedPinOpacity` | `0.28` | Opacity for resolved pins on the page (non-active). Hover reveals to 1. |
+
+> **0.3.0 breaking change.** `users` is no longer a Provider prop — users live server-side now. Seed them once with `seedIfEmpty` and manage them from the in-app admin panel.
 
 ### `<ReviewOverlay>` props
 
-All optional. Accepts `currentPath`, `dashboardPath`, `hidePinsOn`, `LinkComponent`, `accentColor`.
+All optional. Accepts `currentPath`, `dashboardPath`, `adminPath`, `hidePinsOn`, `LinkComponent`, `accentColor`.
 
 ### `<ReviewDashboard>` props
 
 Accepts `LinkComponent`, `homePath`, `accentColor`, `title`.
 
+### `<ReviewAdmin>` props
+
+Accepts `LinkComponent`, `homePath`, `accentColor`, `title`. Renders an "Admin only" stub for non-admin users — safe to mount unconditionally.
+
+### `useReview()` returns
+
+`user`, `comments`, `departments`, `users` (admin-only, lazy via `refreshUsers()`), `login(password)`, `logout()`, `addComment`, `updateComment`, `deleteComment`, `resolveComment`, **`acceptComment`** (lead/director/admin), **`addNote(id, text)`** (any authenticated user), `exportComments`, `exportCompact`.
+
 ### `createReviewRouter(options)`
 
-`storage`, `apiKey`, `screenshotsDir`, `express` (the imported module), optional `jsonLimit`, optional `mirror`, optional `onInsert` hook.
+`storage` (object: `{ reviews, users, departments }`), `apiKey`, `sessionSecret`, `sessionTtlDays`, `cookieName`, `cookieSecure`, `screenshotsDir`, `express`, optional `jsonLimit`, `mirror`, `onInsert`.
+
+### `seedIfEmpty(storage, { departments, users })`
+
+Idempotent helper — only writes when the corresponding tables are empty. Use it to bootstrap the first admin and the initial set of departments at boot.
 
 ---
 
@@ -264,10 +340,16 @@ cd web-annotate-kit/example
 npm install
 npm run dev
 # open http://localhost:5180
-# log in as: alice / alice  (or: bob / bob)
 ```
 
-You'll get two sample pages, a dashboard, and a SQLite file at `example/data/reviews.db`.
+Demo passwords (each role / department combo):
+- `alice` — admin
+- `diana` — director
+- `leo` — lead of Design
+- `lena` — lead of Linguistics
+- `rita`, `rob` — reviewers
+
+You'll get two sample pages, a role-aware dashboard, an admin panel, and a SQLite file at `example/data/reviews.db`.
 
 ---
 
